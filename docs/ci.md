@@ -94,7 +94,7 @@ python tools/ci_scan.py --target . --output artifacts/kunlun-ci.json --fail-on h
 
 ## CI 配置示例
 
-- GitHub Actions：见 [kunlun-scan.yml](ci/github-actions/kunlun-scan.yml)（仓库内实际运行位置仍需放在 `.github/workflows/`）
-- GitLab CI：见 [kunlun-ci.yml](ci/gitlab/kunlun-ci.yml)（根目录 `.gitlab-ci.yml` 已通过 include 引用）
-- Jenkins：见 [Jenkinsfile](ci/jenkins/Jenkinsfile)（可在 Jenkins Job 中配置 Script Path 指向该文件）
+- GitHub Actions：见 [kunlun-scan.yml](../ci/github-actions/kunlun-scan.yml)（仓库内实际运行位置仍需放在 `.github/workflows/`）
+- GitLab CI：见 [kunlun-ci.yml](../ci/gitlab/kunlun-ci.yml)（根目录 `.gitlab-ci.yml` 已通过 include 引用）
+- Jenkins：见 [Jenkinsfile](../ci/jenkins/Jenkinsfile)（可在 Jenkins Job 中配置 Script Path 指向该文件）
  
