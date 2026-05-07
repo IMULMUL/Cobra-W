@@ -6,6 +6,12 @@
 
 该入口不会改变现有 `python kunlun.py scan ...` 的默认行为。
 
+## 前置条件
+
+- 仓库内必须存在至少一条规则文件：`rules/**/CVI_*.py`
+- 若只有 `rules/*.template` 而没有任何 `CVI_*.py`，CI 驱动会直接失败并写出 error JSON（避免“看似通过但实际没有跑规则”的假阴性）
+- 规则与 tamper 的机制与目录结构见 [rules.md](./rules.md) 与 [tamper.md](./tamper.md)
+
 ## 快速开始
 
 安装依赖：
@@ -46,9 +52,46 @@ python tools/ci_scan.py --target . --output artifacts/kunlun-ci.json --fail-on h
 - `1`：扫描过程异常/初始化失败（同时会写出包含 error 的 JSON）
 - `2`：扫描成功，但触发阈值（用于 CI 门禁）
 
+## 门禁逻辑
+
+- 当 `--fail-on none` 时：不触发门禁（只要扫描流程不异常，退出码为 `0`）
+- 当 `--fail-on` 为 `low|medium|high|critical` 时：若存在漏洞且最大严重性 `>= fail-on`，退出码为 `2`
+- 扫描异常（例如 target 不存在）：退出码为 `1`，并输出包含 `error` 堆栈的 JSON 报告
+
+## 报告格式（JSON）
+
+输出文件为稳定 JSON，结构如下：
+
+- `meta`
+  - `target`：扫描目标
+  - `task_id` / `project_id`：内部任务与项目 ID（CI settings 下使用隔离的 SQLite）
+  - `started_at` / `finished_at`
+  - `fail_on` / `include_unconfirm` / `with_vendor` / `settings_module`
+- `summary`
+  - `total`：漏洞条数
+  - `by_severity`：按 `critical/high/medium/low` 统计
+  - `max_severity`：`none|low|medium|high|critical`
+- `vulnerabilities[]`
+  - `cvi_id` / `rule_name` / `severity` / `language`
+  - `file`：命中位置（通常为 `path:line`）
+  - `result_type` / `source_code` / `is_unconfirm`
+- `exit`
+  - `code`：`0|1|2`
+  - `reason`：`ok|threshold_reached|exception`
+
+## 常见问题
+
+- 运行后直接失败，JSON 里提示 `no rules found under rules/**/CVI_*.py`？
+  - 说明当前工作区没有任何规则文件（只有模板或规则未被分发）。需要补齐 `rules/<language>/CVI_<id>.py` 后再跑扫描。
+- 扫描目标不存在但 CI 没有失败？
+  - 使用 `tools/ci_scan.py` 会在 target 不存在时返回 `1` 并写出 error JSON；请确保 CI job 的执行命令是 `python tools/ci_scan.py ...` 而不是只调用 `kunlun.py scan ...`
+- 需要提前执行 `python kunlun.py config load` 吗？
+  - 不需要。CI 驱动会直接从 `rules/**/CVI_*.py` 加载规则元信息用于报告展示，并使用 `settings_ci.py` 的 SQLite 自动迁移初始化
+
 ## CI 配置示例
 
 - GitHub Actions：见 [.github/workflows/kunlun-scan.yml](file:///d:/program/Kunlun_M/.github/workflows/kunlun-scan.yml)
 - GitLab CI：见 [.gitlab-ci.yml](file:///d:/program/Kunlun_M/.gitlab-ci.yml)
 - Jenkins：见 [Jenkinsfile](file:///d:/program/Kunlun_M/Jenkinsfile)
-
+ 
+说明：仓库内的 `.travis.yml` 属于历史配置，不作为当前 CI 扫描驱动的维护示例。

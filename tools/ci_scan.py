@@ -69,6 +69,22 @@ def _load_rule_meta():
     return meta
 
 
+def _iter_rule_files():
+    rules_root = os.path.join(_repo_root, 'rules')
+    if not os.path.isdir(rules_root):
+        return
+    for root, _dirs, files in os.walk(rules_root):
+        for fn in files:
+            if fn.startswith('CVI_') and fn.endswith('.py'):
+                yield os.path.join(root, fn)
+
+
+def _ensure_rules_present():
+    for _ in _iter_rule_files():
+        return
+    raise RuntimeError('no rules found under rules/**/CVI_*.py')
+
+
 def main(argv):
     parser = argparse.ArgumentParser()
     parser.add_argument('--target', default='.', help='scan target path')
@@ -98,6 +114,7 @@ def main(argv):
             raise ValueError('target is empty')
         if not os.path.exists(args.target):
             raise FileNotFoundError('target not found: {t}'.format(t=args.target))
+        _ensure_rules_present()
 
         import django
         django.setup()
