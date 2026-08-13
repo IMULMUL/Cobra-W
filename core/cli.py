@@ -33,8 +33,43 @@ from core.vendors import get_project_by_version, get_and_save_vendor_vuls
 from Kunlun_M.settings import RULES_PATH
 from Kunlun_M.const import VUL_LEVEL, VENDOR_VUL_LEVEL
 
-from web.index.models import ScanTask, ScanResultTask, Rules, NewEvilFunc, Project, ProjectVendors, VendorVulns
+from web.index.models import ScanTask, ScanResultTask, Rules, FrameworkTamper, NewEvilFunc, Project, ProjectVendors, VendorVulns
 from web.index.models import get_resultflow_class, get_and_check_scantask_project_id, check_and_new_project_id, get_and_check_scanresult
+
+import importlib
+
+
+_rule_meta_cache = None
+
+
+def _get_rule_meta():
+    """从规则文件直接加载元数据缓存，用于 DB 无记录时的兜底"""
+    global _rule_meta_cache
+    if _rule_meta_cache is None:
+        _rule_meta_cache = {}
+        rules_root = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'rules')
+        if os.path.isdir(rules_root):
+            for lan in os.listdir(rules_root):
+                lan_path = os.path.join(rules_root, lan)
+                if not os.path.isdir(lan_path) or lan in ('tamper', 'test'):
+                    continue
+                for fn in os.listdir(lan_path):
+                    if not (fn.startswith('CVI_') and fn.endswith('.py')):
+                        continue
+                    try:
+                        mod = importlib.import_module('rules.{}.{}'.format(lan, fn[:-3]))
+                        cls = getattr(mod, fn[:-3])
+                        inst = cls()
+                        svid = str(getattr(inst, 'svid', '')).strip()
+                        if svid:
+                            _rule_meta_cache[svid] = {
+                                'rule_name': getattr(inst, 'vulnerability', '') or fn[:-3],
+                                'level': int(getattr(inst, 'level', 1)),
+                                'author': getattr(inst, 'author', 'Unknown'),
+                            }
+                    except Exception:
+                        continue
+    return _rule_meta_cache
 
 
 def get_sid(target, is_a_sid=False):
@@ -130,11 +165,17 @@ def display_result(scan_id, is_ask=False):
                     author = rule.author
                     level = VUL_LEVEL[rule.level]
                 else:
-                    # 规则表缺失或未初始化时，不应阻断扫描结果展示
-                    rule_name = "Unknown Rule"
-                    author = "Unknown"
-                    level = VUL_LEVEL[1]
-                    logger.warning("[SCAN] Rule CVI_{} not found in database, fallback display.".format(sr.cvi_id))
+                    # 规则表缺失或未初始化时，从规则文件直接读取
+                    rm = _get_rule_meta().get(str(sr.cvi_id))
+                    if rm:
+                        rule_name = rm.get('rule_name', 'Unknown')
+                        author = rm.get('author', 'Unknown')
+                        level = VUL_LEVEL[rm.get('level', 1)]
+                    else:
+                        rule_name = "Unknown Rule"
+                        author = "Unknown"
+                        level = VUL_LEVEL[1]
+                        logger.warning("[SCAN] Rule CVI_{} not found in database or rule files.".format(sr.cvi_id))
 
             row = [sr.id, sr.cvi_id, rule_name, sr.language, level, sr.vulfile_path,
                    author, sr.source_code, sr.result_type]
@@ -187,7 +228,7 @@ def display_result(scan_id, is_ask=False):
         logger.info("[MainThread] Scan id {} has no Result.".format(scan_id))
 
 
-def start(target, formatter, output, special_rules, a_sid=None, language=None, tamper_name=None, black_path=None, is_unconfirm=False, is_unprecom=False):
+def start(target, formatter, output, special_rules, a_sid=None, language=None, tamper_name=None, black_path=None, is_unconfirm=False, is_unprecom=False, template_path=None):
     """
     Start CLI
     :param black_path: 
@@ -248,6 +289,7 @@ def start(target, formatter, output, special_rules, a_sid=None, language=None, t
             main_framework = pa.language
 
         logger.info('[CLI] [STATISTIC] Language: {l} Framework: {f}'.format(l=",".join(main_language), f=main_framework))
+        print('[CI] DEBUG: Detected languages: {}'.format(','.join(main_language)))
         logger.info('[CLI] [STATISTIC] Files: {fc}, Extensions:{ec}, Consume: {tc}'.format(fc=file_count,
                                                                                            ec=len(files),
                                                                                            tc=time_consume))
@@ -258,6 +300,27 @@ def start(target, formatter, output, special_rules, a_sid=None, language=None, t
         # Pretreatment ast object
         ast_object.init_pre(target_directory, files)
         ast_object.pre_ast_all(main_language, is_unprecom=is_unprecom)
+
+        # 注入 JAR 反编译产生的 .java 文件到扫描列表
+        if hasattr(ast_object, 'decompiled_files') and ast_object.decompiled_files:
+            java_entry_index = None
+            for i, (ext, data) in enumerate(files):
+                if ext == '.java':
+                    java_entry_index = i
+                    break
+
+            decompiled_count = len(ast_object.decompiled_files)
+            if java_entry_index is not None:
+                ext, data = files[java_entry_index]
+                data['list'].extend(ast_object.decompiled_files)
+                data['count'] = len(data['list'])
+                files[java_entry_index] = (ext, data)
+            else:
+                files.append(('.java', {
+                    'count': decompiled_count,
+                    'list': ast_object.decompiled_files
+                }))
+            logger.info("[SCAN] JAR 反编译产生 {} 个 .java 文件已加入扫描列表".format(decompiled_count))
 
         # scan
         scan(target_directory=target_directory, a_sid=a_sid, s_sid=s_sid, special_rules=pa.special_rules,
@@ -279,7 +342,7 @@ def start(target, formatter, output, special_rules, a_sid=None, language=None, t
         raise
 
     # 输出写入文件
-    write_to_file(target=target, sid=s_sid, output_format=formatter, filename=output)
+    write_to_file(target=target, sid=s_sid, output_format=formatter, filename=output, template_path=template_path)
 
 
 def show_info(type, key):
@@ -371,49 +434,44 @@ def show_info(type, key):
     elif type == "tamper":
 
         table = PrettyTable(
-            ['#', 'TampName', 'FilterFunc', 'InputControl'])
+            ['#', 'TamperName', 'Language', 'FilterFunc', 'ExtraSinks', 'ControlledSources'])
 
         table.align = 'l'
         i = 0
 
-        tamp_path = os.path.join(RULES_PATH, 'tamper/')
-        tamp_list = list_parse(tamp_path, True)
-
         if key == "all":
-            for tamp in tamp_list:
+            for ft in FrameworkTamper.objects.all().order_by("name"):
                 i += 1
-                tampname = tamp.split('.')[0]
-                tampfile = "rules.tamper." + tampname
-
-                tamp_obj = __import__(tampfile, fromlist=tampname)
-
-                filter_func = getattr(tamp_obj, tampname)
-                input_control = getattr(tamp_obj, tampname + "_controlled")
-
-                table.add_row([i, tampname, filter_func, input_control])
+                table.add_row([i, ft.name, ft.language,
+                               len(ft.filter_functions) if ft.filter_functions else 0,
+                               len(ft.extra_sinks) if ft.extra_sinks else 0,
+                               len(ft.controlled_sources) if ft.controlled_sources else 0])
 
             return table
-        elif key + ".py" in tamp_list:
-            tampname = key
-            tampfile = "rules.tamper." + tampname
-
-            tamp_obj = __import__(tampfile, fromlist=tampname)
-
-            filter_func = getattr(tamp_obj, tampname)
-            input_control = getattr(tamp_obj, tampname + "_controlled")
-
-            return """
+        else:
+            ft = FrameworkTamper.objects.filter(name__iexact=key).first()
+            if ft:
+                return """
 Tamper Name:
+    {}
+
+Language:
     {}
 
 Filter Func:
 {}
-    
-Input Control:
+
+Extra Sinks:
 {}
-""".format(tampname, pprint.pformat(filter_func, indent=4), pprint.pformat(input_control, indent=4))
-        else:
-            logger.error("[Info] no tamper name {]".format(key))
+
+Controlled Sources:
+{}
+""".format(ft.name, ft.language,
+           pprint.pformat(ft.filter_functions, indent=4) if ft.filter_functions else "    None",
+           pprint.pformat(ft.extra_sinks, indent=4) if ft.extra_sinks else "    None",
+           pprint.pformat(ft.controlled_sources, indent=4) if ft.controlled_sources else "    None")
+            else:
+                logger.error("[Info] no tamper name {}".format(key))
 
     return ""
 

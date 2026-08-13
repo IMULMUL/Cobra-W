@@ -47,6 +47,11 @@ class Project(models.Model):
     project_hash = models.CharField(max_length=32)
 
 
+def _escape_like(value):
+    """转义 LIKE 查询中的特殊字符 % 和 _，防止用户输入被当作通配符"""
+    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\')
+
+
 def search_project_by_name(project_name):
     """
         支持*语法的查询
@@ -57,19 +62,23 @@ def search_project_by_name(project_name):
         ps = Project.objects.all().order_by('-id')
         return ps
 
+    # 去除自定义 * 通配符后，转义 SQL LIKE 通配符 % 和 _
+    stripped = project_name.strip('*')
+    safe_name = _escape_like(stripped)
+
     if project_name.startswith('*'):
         if project_name.endswith('*'):
-            ps = Project.objects.filter(project_name__icontains=project_name.strip('*')).order_by('-id')
+            ps = Project.objects.filter(project_name__icontains=safe_name).order_by('-id')
 
         else:
-            ps = Project.objects.filter(project_name__iendswith=project_name.strip('*')).order_by('-id')
+            ps = Project.objects.filter(project_name__iendswith=safe_name).order_by('-id')
 
     else:
         if project_name.endswith('*'):
-            ps = Project.objects.filter(project_name__istartswith=project_name.strip('*')).order_by('-id')
+            ps = Project.objects.filter(project_name__istartswith=safe_name).order_by('-id')
 
         else:
-            ps = Project.objects.filter(project_name__iexact=project_name.strip('*')).order_by('-id')
+            ps = Project.objects.filter(project_name__iexact=safe_name).order_by('-id')
 
     return ps
 
@@ -201,6 +210,7 @@ class ScanTask(models.Model):
     last_scan_time = models.DateTimeField(default=timezone.now)
     visit_token = models.CharField(max_length=64, default=uuid.uuid4)
     is_finished = models.IntegerField(default=3)
+    pid = models.IntegerField(null=True, default=None)
 
     def save(self, *args, **kwargs):
         # 检查project存不存在，如果不存在，那么新建一个
@@ -372,11 +382,22 @@ class Rules(models.Model):
 
 
 # roundcube "Filter-Function" show [1000, 10001, 10002]
-class Tampers(models.Model):
-    tam_name = models.CharField(max_length=30)
-    tam_type = models.CharField(max_length=100)
-    tam_key = models.CharField(max_length=200)
-    tam_value = models.CharField(max_length=200)
+class FrameworkTamper(models.Model):
+    name = models.CharField(max_length=50, unique=True, help_text='框架标识名，如 django, express')
+    language = models.CharField(max_length=20, help_text='语言，如 python, javascript')
+    framework_name = models.CharField(max_length=50, default='', help_text='显示名称，如 Django, Express')
+    dependencies = models.JSONField(default=dict, blank=True, help_text='DEPENDENCIES dict')
+    filter_functions = models.JSONField(default=dict, blank=True, help_text='FILTER_FUNCTIONS dict')
+    extra_sinks = models.JSONField(default=list, blank=True, help_text='EXTRA_SINKS list')
+    controlled_sources = models.JSONField(default=list, blank=True, help_text='CONTROLLED_SOURCES list')
+    detect_code = models.TextField(default='', blank=True, help_text='detect() 函数源码')
+
+    class Meta:
+        db_table = 'framework_tamper'
+        verbose_name = 'Framework Tamper'
+
+    def __str__(self):
+        return self.name
 
 
 class NewEvilFunc(models.Model):
@@ -541,3 +562,21 @@ def get_resultflow_class(scanid):
             pass
 
     return ResultflowObject
+
+
+class ApiToken(models.Model):
+    """用户 API Token，支持多 token 管理"""
+    user = models.ForeignKey('auth.User', on_delete=models.CASCADE, related_name='api_tokens')
+    name = models.CharField(max_length=100, default='', blank=True, help_text='Token 用途备注')
+    token = models.CharField(max_length=64, unique=True, db_index=True)
+    is_active = models.BooleanField(default=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    last_used_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'web_apitoken'
+        verbose_name = 'API Token'
+        verbose_name_plural = 'API Tokens'
+
+    def __str__(self):
+        return '{} - {}'.format(self.user.username, self.name or self.token[:12])

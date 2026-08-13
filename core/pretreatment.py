@@ -14,6 +14,7 @@ from bs4 import BeautifulSoup
 
 import esprima
 import jsbeautifier
+import javalang
 
 from utils.log import logger
 from Kunlun_M.const import ext_dict
@@ -28,9 +29,10 @@ import traceback
 import zipfile
 import queue
 import asyncio
+import subprocess
 from collections.abc import Hashable
 
-could_ast_pase_lans = ["php", "chromeext", "javascript", "html"]
+could_ast_pase_lans = ["php", "chromeext", "javascript", "html", "java", "python", "go", "c"]
 
 
 class Pretreatment:
@@ -44,6 +46,7 @@ class Pretreatment:
 
         self.pre_result = {}
         self.define_dict = {}
+        self.decompiled_files = []
 
         # self.pre_ast_all()
 
@@ -59,13 +62,17 @@ class Pretreatment:
         if os.path.isfile(filepath):
             return os.path.normpath(filepath)
 
-        if os.path.isfile(os.path.normpath(os.path.join(self.target_directory, filepath))):
-            return os.path.normpath(os.path.join(self.target_directory, filepath))
+        # 去掉前导 /，避免 os.path.join 把它当绝对路径
+        clean_filepath = filepath.lstrip('/')
+
+        joined = os.path.normpath(os.path.join(self.target_directory, clean_filepath))
+        if os.path.isfile(joined):
+            return joined
 
         if os.path.isfile(self.target_directory):
             return os.path.normpath(self.target_directory)
         else:
-            return os.path.normpath(os.path.join(self.target_directory, filepath))
+            return joined
 
     def _normalize_define_key(self, key_node):
         """
@@ -91,6 +98,25 @@ class Pretreatment:
             return key_node
 
         return repr(key_node)
+
+    def _ensure_cfr(self):
+        """确保 CFR 反编译器可用，不存在则自动下载"""
+        # 先检查项目 tools 目录
+        cfr_path = os.path.join(os.path.dirname(os.path.dirname(__file__)), 'tools', 'cfr.jar')
+        if os.path.isfile(cfr_path):
+            return cfr_path
+
+        # 自动下载
+        try:
+            import urllib.request
+            cfr_url = "https://repo1.maven.org/maven2/org/benf/cfr/0.152/cfr-0.152.jar"
+            os.makedirs(os.path.dirname(cfr_path), exist_ok=True)
+            logger.info("[AST] [JAR] 下载 CFR 反编译器...")
+            urllib.request.urlretrieve(cfr_url, cfr_path)
+            return cfr_path
+        except Exception as e:
+            logger.warning("[AST] [JAR] CFR 下载失败: {}".format(str(e)))
+            return None
 
     def pre_ast_all(self, lan=None, is_unprecom=False):
 
@@ -120,10 +146,18 @@ class Pretreatment:
     @staticmethod
     def _repair_php_code_for_parser(code_content):
         """
-        尝试修复 phply 暂不支持的部分语法，避免整个文件 AST 预处理失败。
+        尝试修复 lphply 暂不支持的部分语法，避免整个文件 AST 预处理失败。
         当前处理：
-        1. ($a)() 这类「括号包裹变量再调用」语法；
-        2. PHP7 null coalescing（??）语法，降级为 ?: 以便 phply 继续解析。
+        1. ($a)() 这类「括号包裹变量再调用」语法。
+
+        注意：lphply >= 2.0.0 已原生支持以下语法，无需降级：
+        - PHP7 null coalescing（??）— lexer 识别为 COALESCE token
+        - PHP7 spaceship（<=>）— lexer 识别为 SPACESHIP token
+        - PHP8 match expression
+        - PHP8 named arguments
+        - PHP8.2 DNF types、enum、readonly
+        - PHP8.4 property hooks、new without parentheses
+        - PHP8.5 pipe operator、clone with arguments
         """
         repaired_content = code_content
         token_stream = lexer.clone()
@@ -139,17 +173,6 @@ class Pretreatment:
         # 仅在词法级别命中特定模式时进行修复，避免正则替换误伤字符串、注释等内容。
         edits = []
         token_count = len(tokens)
-
-        # 修复 phply 不支持的 null coalescing 运算符 ??。
-        # 这里仅做语法层面的降级（?? -> ?:），目标是让 AST 预处理不中断。
-        for index in range(token_count - 1):
-            token_q1 = tokens[index]
-            token_q2 = tokens[index + 1]
-
-            if token_q1.type == 'QUESTION' and token_q2.type == 'QUESTION':
-                start = token_q1.lexpos
-                end = token_q2.lexpos + len(token_q2.value)
-                edits.append((start, end, '?:'))
 
         # 修复 ( VARIABLE ) ( 语法模式。
         for index in range(token_count - 3):
@@ -454,8 +477,13 @@ class Pretreatment:
                     new_filepath = filepath + ".pretty"
 
                     try:
-                        # 添加新限制，如果js文件内容大于一定程度，则不解析
-                        if len(code_content) > 3000 or code_content.count('\n') > 500 or code_content.count('\n') < 10:
+                        # 基于代码格式的启发式过滤：
+                        # - 跳过混淆/压缩代码（平均行长 > 500 字符）
+                        # - 跳过极短文件（总行数 < 5）
+                        # - 不再限制总字符数和总行数，以支持 Node.js 服务端大文件
+                        line_count = code_content.count('\n') + 1
+                        avg_line_len = len(code_content) / max(line_count, 1)
+                        if avg_line_len > 500 or line_count < 5:
                             continue
 
                         if not os.path.isfile(new_filepath):
@@ -466,7 +494,7 @@ class Pretreatment:
 
                         # self.pre_result[filepath]['content'] = code_content
                         if not self.is_unprecom:
-                            all_nodes = esprima.parse(code_content, {"loc": True})
+                            all_nodes = esprima.parse(code_content, {"loc": True, "tolerant": True})
                         else:
                             all_nodes = []
 
@@ -488,6 +516,173 @@ class Pretreatment:
 
                     except:
                         logger.warning('[AST] something error, {}'.format(traceback.format_exc()))
+                        continue
+
+            elif fileext[0] == '.jar' and 'java' in self.lan:
+                # 针对 JAR 文件的反编译预处理
+                for filepath in fileext[1]['list']:
+                    filepath = self.get_path(filepath)
+                    self.pre_result[filepath] = {}
+                    self.pre_result[filepath]['language'] = 'java'
+                    self.pre_result[filepath]['ast_nodes'] = []
+                    self.pre_result[filepath]['type'] = 'jar'
+
+                    try:
+                        # 1. 确保有 CFR
+                        cfr_path = self._ensure_cfr()
+                        if not cfr_path:
+                            logger.warning("[AST] [JAR] CFR 不可用，跳过反编译: {}".format(filepath))
+                            continue
+
+                        # 2. 反编译 JAR（CFR 直接接受 .jar 文件作为输入）
+                        decompiled_dir = filepath + "_decompiled/"
+                        if not os.path.isdir(decompiled_dir) or not os.listdir(decompiled_dir):
+                            os.makedirs(decompiled_dir, exist_ok=True)
+                            subprocess.run(
+                                ['java', '-jar', cfr_path, filepath, '--outputdir', decompiled_dir],
+                                capture_output=True, timeout=120
+                            )
+
+                        self.pre_result[filepath]['decompiled_dir'] = decompiled_dir
+
+                        # 3. 遍历反编译输出的 .java 文件，做 AST 解析
+                        for root, dirs, java_files in os.walk(decompiled_dir):
+                            for jf in java_files:
+                                if jf.endswith('.java'):
+                                    java_path = os.path.join(root, jf)
+                                    self.pre_result[java_path] = {}
+                                    self.pre_result[java_path]['language'] = 'java'
+                                    self.pre_result[java_path]['ast_nodes'] = []
+                                    self.pre_result[java_path]['source_jar'] = filepath
+
+                                    try:
+                                        with codecs.open(java_path, 'r', encoding='utf-8', errors='ignore') as f:
+                                            code = f.read()
+                                        if not self.is_unprecom:
+                                            tree = javalang.parse.parse(code)
+                                            self.pre_result[java_path]['ast_nodes'] = tree
+                                    except javalang.parser.JavaSyntaxError:
+                                        logger.warning("[AST] [JAR] 反编译文件语法错误: {}".format(java_path))
+                                    except Exception:
+                                        logger.warning("[AST] [JAR] 解析异常: {}".format(traceback.format_exc()))
+
+                                    # 加入反编译文件列表，供后续扫描使用
+                                    self.decompiled_files.append(java_path)
+
+                    except Exception:
+                        logger.warning("[AST] [JAR] 处理异常: {}".format(traceback.format_exc()))
+
+            elif fileext[0] in ext_dict['java'] and 'java' in self.lan:
+                # 针对 Java 的预处理
+                for filepath in fileext[1]['list']:
+                    filepath = self.get_path(filepath)
+                    self.pre_result[filepath] = {}
+                    self.pre_result[filepath]['language'] = 'java'
+                    self.pre_result[filepath]['ast_nodes'] = []
+
+                    try:
+                        fi = codecs.open(filepath, "r", encoding="utf-8", errors="ignore")
+                        code_content = fi.read()
+                        fi.close()
+
+                        if not self.is_unprecom:
+                            tree = javalang.parse.parse(code_content)
+                            self.pre_result[filepath]['ast_nodes'] = tree
+                        else:
+                            self.pre_result[filepath]['ast_nodes'] = []
+
+                    except javalang.parser.JavaSyntaxError:
+                        logger.warning("[AST] [ERROR] parser {} JavaSyntaxError".format(filepath))
+                        continue
+
+                    except:
+                        logger.warning("[AST] something error, {}".format(traceback.format_exc()))
+                        continue
+
+            elif fileext[0] in ext_dict["python"] and "python" in self.lan:
+                # 针对 Python 的预处理
+                for filepath in fileext[1]["list"]:
+                    filepath = self.get_path(filepath)
+                    self.pre_result[filepath] = {}
+                    self.pre_result[filepath]["language"] = "python"
+                    self.pre_result[filepath]["ast_nodes"] = []
+
+                    try:
+                        fi = codecs.open(filepath, "r", encoding="utf-8", errors="ignore")
+                        code_content = fi.read()
+                        fi.close()
+
+                        if not self.is_unprecom:
+                            import ast as python_ast
+                            tree = python_ast.parse(code_content, filename=filepath)
+                            self.pre_result[filepath]["ast_nodes"] = tree
+                        else:
+                            self.pre_result[filepath]["ast_nodes"] = []
+
+                    except SyntaxError as e:
+                        logger.warning("[AST] [ERROR] parser {} SyntaxError: {}".format(filepath, str(e)))
+                        continue
+
+                    except Exception:
+                        logger.warning("[AST] something error, {}".format(traceback.format_exc()))
+                        continue
+
+            elif fileext[0] in ext_dict["go"] and "go" in self.lan:
+                # 针对 Go 的预处理
+                # Go 没有 Python 端的 AST 解析器，将源码以文本形式存储，
+                # 后续由 core/core_engine/go/parser.py 做基于正则和行扫描的静态分析。
+                for filepath in fileext[1]["list"]:
+                    filepath = self.get_path(filepath)
+                    self.pre_result[filepath] = {}
+                    self.pre_result[filepath]["language"] = "go"
+                    self.pre_result[filepath]["ast_nodes"] = []
+
+                    try:
+                        fi = codecs.open(filepath, "r", encoding="utf-8", errors="ignore")
+                        code_content = fi.read()
+                        fi.close()
+
+                        # 存储源码行列表供 parser 使用
+                        self.pre_result[filepath]["source_lines"] = code_content.splitlines()
+
+                    except Exception:
+                        logger.warning("[AST] something error, {}".format(traceback.format_exc()))
+                        continue
+
+            elif fileext[0] in ext_dict["c"] and ("c" in self.lan or "c++" in self.lan):
+                # 针对 C/C++ 的预处理
+                # 使用 tree-sitter 解析 C/C++ 源文件，生成 AST
+                for filepath in fileext[1]["list"]:
+                    filepath = self.get_path(filepath)
+                    self.pre_result[filepath] = {}
+                    self.pre_result[filepath]["language"] = "c"
+                    self.pre_result[filepath]["ast_nodes"] = []
+
+                    try:
+                        fi = codecs.open(filepath, "r", encoding="utf-8", errors="ignore")
+                        code_content = fi.read()
+                        fi.close()
+
+                        if not self.is_unprecom:
+                            try:
+                                import tree_sitter_c as tsc
+                                from tree_sitter import Language, Parser
+                                C_LANG = Language(tsc.language())
+                                ts_parser = Parser(C_LANG)
+                                tree = ts_parser.parse(bytes(code_content, 'utf8'))
+                                self.pre_result[filepath]['ast_nodes'] = tree
+                            except ImportError:
+                                logger.warning("[AST] tree-sitter-c not installed, skip AST for {}".format(filepath))
+                            except Exception as e:
+                                logger.warning("[AST] [ERROR] tree-sitter parse error for {}: {}".format(filepath, str(e)))
+                        else:
+                            self.pre_result[filepath]["ast_nodes"] = []
+
+                        # 存储源码供 parser 使用
+                        self.pre_result[filepath]["source_lines"] = code_content.splitlines()
+
+                    except Exception:
+                        logger.warning("[AST] something error, {}".format(traceback.format_exc()))
                         continue
 
             # 手动回收?

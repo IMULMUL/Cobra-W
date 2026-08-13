@@ -38,7 +38,7 @@ from core.__version__ import __introduction__
 from core import cli
 from core.engine import Running
 
-from web.index.models import ScanTask, ScanResultTask, Rules, Tampers, NewEvilFunc
+from web.index.models import ScanTask, ScanResultTask, Rules, FrameworkTamper, NewEvilFunc
 from web.index.models import get_resultflow_class, get_dataflow_class
 from web.index.models import get_and_check_scantask_project_id, get_and_check_scanresult, check_and_new_project_id
 
@@ -370,7 +370,7 @@ class KunlunInterpreter(BaseInterpreter):
             "rule_id": ["all", "<CVI_ID>"],
             "tamper": ['<tamper_name>'],
             "log_name": ['<logfile_name>'],
-            "language": [None, 'php', 'javascript', 'solidity'],
+            "language": [None, 'php', 'javascript', 'python', 'java', 'go', 'solidity'],
             "black_path": ['<black_path>'],
             "is_debug": [False, True],
             "is_without_precom": [False, True],
@@ -403,6 +403,19 @@ class KunlunInterpreter(BaseInterpreter):
         self.scan_required_options_list = ["target"]
 
         self.__parse_prompt()
+
+    def suggested_commands(self):
+        """根据 current_mode 返回当前模式可用的命令列表"""
+        if self.current_mode == 'config':
+            return self.config_commands
+        elif self.current_mode == 'scan':
+            return self.scan_commands
+        elif self.current_mode == 'result':
+            return self.result_commands
+        elif self.current_mode == 'showt':
+            return self.show_commands
+        else:
+            return self.global_commands
 
     def __parse_prompt(self):
         raw_prompt_default_template = "\001\033[4m\002{host}\001\033[0m\002 > "
@@ -480,6 +493,8 @@ class KunlunInterpreter(BaseInterpreter):
         self.config_mode = ""
         self.config_keyword = ""
         self.last_config = {}
+        self.result_task_id = None
+        self.result_obj = None
 
         logger_console.info(self.global_help)
 
@@ -490,7 +505,15 @@ class KunlunInterpreter(BaseInterpreter):
         # set log
         self.scan_options['log_name'] = self.check_scan_log_file()
 
+        # 如果带有路径参数，直接设置 target
+        if args and args[0]:
+            target_path = args[0].strip().strip('"').strip("'")
+            if os.path.exists(target_path):
+                self.scan_options['target'] = target_path
+                logger.info("[Console] Target set to: {}".format(target_path))
+
         logger_console.info(self.scan_help)
+        self.command_status()
 
     def command_exit(self, *args, **kwargs):
         raise EOFError
@@ -1009,22 +1032,12 @@ Input Control:
                 return
 
             elif self.config_mode == 'tamper':
-                for option_value in self.last_config['input_control']:
-
-                    t = Tampers(tam_name=self.config_keyword, tam_key=self.config_keyword, tam_value=option_value, tam_type='Input-Control')
-                    t.save()
-
-                for option_name in self.last_config['filter_func']:
-
-                    t2 = Tampers.objects.filter(tam_name=self.config_keyword, tam_key=option_name, tam_type='Filter-Function').first()
-                    if t2:
-                        t2.tam_value = self.config_dict['filter_func'][option_name]
-                        t2.save()
-                    else:
-                        # 没有的话就要新加
-                        t2 = Tampers(tam_name=self.config_keyword, tam_key=option_name, tam_value=self.config_dict['filter_func'][option_name], tam_type='Filter-Function')
-                        t2.save()
-                logger.info("[Console] New Tamper {} has be saved.".format(self.config_keyword))
+                ft = FrameworkTamper.objects.filter(name__iexact=self.config_keyword).first()
+                if ft:
+                    ft.filter_functions = self.config_dict['filter_func']
+                    ft.controlled_sources = self.config_dict['input_control']
+                    ft.save()
+                logger.info("[Console] Tamper {} has been saved.".format(self.config_keyword))
                 return
 
     def command_del(self, *args, **kwargs):
@@ -1120,13 +1133,9 @@ Input Control:
                         logger.error("[Console] Not Found Rules, Please check command or execute config load.")
 
                 if mod == 'tamper':
-                    ts = Tampers.objects.values("tam_name").all()
+                    fts = FrameworkTamper.objects.values("name").all()
 
-                    tamper_name_list = []
-
-                    for tamper_name in ts:
-                        tamper_name_list.append(tamper_name['tam_name'].lower())
-
+                    tamper_name_list = [t['name'].lower() for t in fts]
                     tamper_name_list = list(set(tamper_name_list))
                     tamper_name_list.append("all")
 
@@ -1149,27 +1158,22 @@ Input Control:
                         logger.info("[Console] ALL Tampers:\n{}".format(tamper_table))
                         logger.warn("[Console] Use 'show tamper <tamper_name>' can get tamper detail.")
                     else:
-                        ts = Tampers.objects.filter(tam_name=key)
+                        ft = FrameworkTamper.objects.filter(name__iexact=key).first()
 
-                        if ts:
-                            filter_func = {}
-                            input_control = []
-
-                            for t in ts:
-                                if t.tam_type == 'Filter-Function':
-                                    filter_func[t.tam_key] = ast.literal_eval(t.tam_value)
-                                elif t.tam_type == 'Input-Control':
-                                    input_control.append(t.tam_value)
-
-                            logger.info("""\nTamper Name:
+                        if ft:
+                            logger.info("""
+Tamper Name:
         {}
-    
+
     Filter Func:
     {}
-    
-    Input Control:
+
+    Extra Sinks:
     {}
-    """.format(key, pprint.pformat(filter_func, indent=4), pprint.pformat(input_control, indent=4)))
+
+    Controlled Sources:
+    {}
+    """.format(ft.name, pprint.pformat(ft.filter_functions, indent=4), pprint.pformat(ft.extra_sinks, indent=4), pprint.pformat(ft.controlled_sources, indent=4)))
 
                         else:
                             logger.error("[Console] Not Found Tampers, Please check command or execute config load.")
@@ -1295,9 +1299,9 @@ Input Control:
                         logger.error("[Console] ScanTask {} has 0 New evil Function.".format(self.result_task_id))
 
                 elif mod == 'options':
-                    logger_console.debug("Show mode Option:")
+                    logger_console.info("Show mode Option:")
                     for option in self.result_options:
-                        logger_console.debug("    {}: {} {}".format(option.ljust(20, ' '), str(self.result_options[option]).ljust(30, " "), str(self.result_option_list[option])))
+                        logger_console.info("    {}: {} {}".format(option.ljust(20, ' '), str(self.result_options[option]).ljust(30, " "), str(self.result_option_list[option])))
 
             else:
                 logger.error("[Console] Wrong Command. Please Check you command.")
@@ -1368,22 +1372,16 @@ Input Control:
                 return
 
         elif mod == 'tamper':
-            ts = Tampers.objects.filter(tam_name=keyword)
+            ft = FrameworkTamper.objects.filter(name__iexact=keyword).first()
 
-            if ts:
+            if ft:
                 self.current_mode = "config"
                 self.config_mode = "tamper"
                 self.config_keyword = keyword
-                self.config_dict['filter_func'] = {}
-                self.config_dict['input_control'] = []
-                self.last_config['filter_func'] = {}
-                self.last_config['input_control'] = []
-
-                for t in ts:
-                    if t.tam_type == 'Filter-Function':
-                        self.config_dict['filter_func'][t.tam_key] = ast.literal_eval(t.tam_value)
-                    elif t.tam_type == 'Input-Control':
-                        self.config_dict['input_control'].append(t.tam_value)
+                self.config_dict['filter_func'] = dict(ft.filter_functions or {})
+                self.config_dict['input_control'] = list(ft.controlled_sources or [])
+                self.last_config['filter_func'] = dict(ft.filter_functions or {})
+                self.last_config['input_control'] = list(ft.controlled_sources or [])
 
                 logger_console.info(self.config_tamper_help)
             else:
@@ -1464,8 +1462,8 @@ Input Control:
             s = cli.check_scantask(task_name=task_name, target_path=self.scan_options['target'], parameter_config=self.get_sacn_parameters(), project_origin=origin)
 
             if int(s.is_finished) == 1:
-                logger.info("[INIT] Finished Task.")
-                exit()
+                logger.info("[INIT] Task {} already finished.".format(s.id))
+                return
 
             # 标识任务id
             sid = str(s.id)
@@ -1493,13 +1491,21 @@ Input Control:
 
     def command_check_log(self, *args, **kwargs):
         if self.current_mode != 'result':
-            logger.warn("[Console] Command Status only for result mode")
+            logger.warn("[Console] Command check_log only for result mode")
             return
 
         log_file_path = os.path.join(LOGS_PATH, self.scan_options['log_name']+'.log')
 
         if os.path.exists(log_file_path):
-            os.system(log_file_path)
+            try:
+                with open(log_file_path, 'r', encoding='utf-8', errors='ignore') as f:
+                    lines = f.readlines()
+                    tail_lines = lines[-50:] if len(lines) > 50 else lines
+                    logger_console.info("=== Log file: {} (last {} lines) ===".format(log_file_path, len(tail_lines)))
+                    for line in tail_lines:
+                        logger_console.info(line.rstrip())
+            except Exception as e:
+                logger.error("[Console] Failed to read log file: {}".format(str(e)))
         else:
             logger.error("[Console] Log File {} does not exist.".format(log_file_path))
             return
@@ -1584,3 +1590,20 @@ Input Control:
                 return list(self.result_option_list)
             else:
                 return []
+
+    def complete_load(self, text, *args, **kwargs):
+        """补全 load 命令的 scan_id"""
+        try:
+            scan_ids = [str(st.id) for st in ScanTask.objects.all().order_by('-id')[:20]]
+            if text:
+                return [sid for sid in scan_ids if sid.startswith(text)]
+            return scan_ids
+        except Exception:
+            return []
+
+    def complete_search(self, text, *args, **kwargs):
+        """补全 search 命令的子命令"""
+        subcmds = ['vendor']
+        if text:
+            return [s for s in subcmds if s.startswith(text)]
+        return subcmds

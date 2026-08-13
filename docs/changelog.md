@@ -1,5 +1,545 @@
 ## 更新日志
-
+- 2026-06-17
+  - KunLun-M 2.15.1
+  - **Tamper 数据模型重构**
+    - 删除旧 `Tampers` EAV 模型（name/type/key/value），新建 `FrameworkTamper` 结构化模型（language/framework_name/dependencies/filter_functions/extra_sinks/controlled_sources/detect_code 全字段）
+    - 数据库迁移自动转换旧数据：`ast.literal_eval` 解析字符串值，SVID 范围推断语言（1000-1999→php, 6000-6999→javascript 等），extra_sink 兼容 list/dict 两种旧格式
+    - `TamperCheck.load()` 重写：扫描 `rules/tamper/<language>/` 子目录，inspect 提取字段，`update_or_create` 写入 DB
+    - `show tamper` 从文件扫描改为 DB 查询，支持 `-k` 关键词过滤
+    - 旧版扁平 tamper 文件自动迁移到语言子目录（`_migrate_legacy_files`）
+  - **CLI 命令精简**
+    - `config load/recover/loadtamper/retamper` → 统一为 `export`（DB→文件导出，已有文件跳过）
+    - `config` 子命令从 `choices=['export']` 改为独立 `export` 顶层命令
+    - `init initialize` → 直接 `init`（去掉冗余子命令）
+    - `-h` 帮助分组展示：Core Commands（init/scan/console/web）+ Other Commands（export/generate/show/search/plugin）
+    - 修复帮助文本 `tanmpers` 拼写错误
+  - **README 更新**
+    - 两个 README（中文/英文）命令行展示同步更新为新分组格式
+    - 版本号统一为 v2.15.1
+    - 删除已废弃的 `config load/recover/loadtamper/retamper` 说明
+- 2026-06-16
+  - KunLun-M 2.15.0
+  - **安全防护：统一路径安全校验**
+    - 新增 `utils/path_safety.py` 公共模块，提供 `safe_join`/`is_path_under` 函数
+    - 使用 `os.path.realpath` 解析 symlink，防止符号链接绕过目录限制
+    - 修复 `files.py`、`views.py`（code_view）、`docs` 接口、`backend/views.py` 日志接口的路径校验
+    - 修复 Windows 上 `os.sep`（`\`）与前端 `/` 不匹配导致子目录请求 403
+  - **扫描结果页增强**
+    - 漏洞结果列表添加 critical（严重）级别翻译和筛选按钮
+    - 点击漏洞行展开详情面板：左侧基本信息（CVI/文件/语言/来源/类型/等级），右侧传播链节点+代码高亮
+    - 传播链面板改为 inline 行模式，插入对应漏洞行下方，支持 Prism 语法高亮
+    - critical 标签强制白字 `color:#fff`，避免与深红底色混淆
+  - **项目文件管理器**
+    - 项目级文件浏览器，支持目录树导航和文件内容查看
+    - 漏洞结果文件链接跳转时自动解析 `file:lineno` 格式
+    - 代码区 Prism 整段高亮+按行拆分，浅色主题（`#eaedf1` 底色）
+    - 修复 AdminLTE 全局 `table td padding` 覆盖代码区样式（`!important`）
+    - 修复 Bulma `.number` 样式泄漏到 Prism `.token.number`
+    - 文件树和代码区隐藏滚动条，flexbox 左右布局
+    - `{% load static %}` 缺失修复（project_detail.html、task_detail.html）
+  - **tamper/rule 管理页**
+    - tamper 列表按语言分组展示，默认折叠，支持展开/搜索
+    - rule 列表改为左右分栏布局（左侧规则列表，右侧 Prism 高亮源码）
+    - tamper 列表直接展示源码，去掉查看源码跳转
+    - tamper 列表和详情页适配新目录结构
+    - 新增 legacy tamper 兼容模块 `_compat.py`，支持旧格式 tamper 文件
+  - **Bug 修复**
+    - `load_rules()` match 字段 NOT NULL 约束失败
+    - 批量修复 controller 缺失 import（os/json/reverse/settings/RULES_PATH）
+    - 规则列表 AJAX 源码 URL 改用 `{% url %}` 避免硬编码路径导致 301
+    - 传播链数据注入顺序修复（移到 chain-panel.js 加载之前）
+    - 后端 chain 异常改为 warning 日志，不再静默吞掉
+- 2026-06-15
+  - KunLun-M 2.14.1
+  - **全项目架构复盘修复**
+    - 删除 `scanner.py` 中无意义的 `res.file_path` 自赋值
+    - 合并 Go matcher 中两个重复的 `function-param-regex` 分支，删除 37 行死代码
+    - 修复 6 语言函数摘要查询不匹配：`lookup_summary` 改为先精确匹配全限定名再 fallback 短名（PHP/JS/Python/Go/C/Java）
+    - 修复 Java parser `global_methods` 迭代错误（元组解包不匹配 + 列表用 `.get()` 访问）
+    - VirtualRule 未继承原始规则的 `level` 属性，导致 EXTRA_SINKS 虚拟规则全部 level=0
+    - Python `function_back` 只收集首个 return 分支结果，导致 L2 安全函数继承被误判
+    - Source Discovery 过度标记 bug：5 语言（PHP/JS/Python/Go/C）从检查函数体内容改为只检查 return 语句值
+    - Go/C `_function_returns_source` 从根节点开始遍历导致立即返回 False，改为从 body 子节点开始
+- 2026-06-12
+  - KunLun-M 2.14.0
+  - **tamper 框架化改造（Phase 1/2/3）**
+    - Phase 1：框架配置目录重组（`rules/tamper/configs/{php,go,c,java,js,python}/`）+ 自动框架检测加载器 `_loader.py`（支持目录结构特征、pom.xml、composer.json 等多维度检测）
+    - Phase 2：CONTROLLED_SOURCES 注入 source_discovery，Go `c.Query`/`c.Param` 等 Gin 框架参数源自动标记为可控；JS `req.query`/`req.params` 等 Express 参数源同理
+    - Phase 3：EXTRA_SINKS 机制——框架特有 sink pattern（如 Laravel `DB::raw`、Gin `c.Redirect`）以虚拟规则形式注入扫描队列，走完整 grep → AST/CAST 验证 → 报告流程
+    - 新增 17 个框架配置（Laravel/Symfony/CodeIgniter/Slim/WordPress/ThinkPHP/Roundcube/phpBB、Gin/GORM/Fiber/Echo/Chi、Spring Boot/Struts2、Express/Koa、Django/Flask）
+    - FILTER_FUNCTIONS 统一为 `{safe_for: [svid列表]}` 格式
+  - **PHP 多层间接调用追踪**
+    - `_build_var_to_sink_map()` + `_resolve_var_chain()`：`$a="system"` → `$b=$a` → `$b($cmd)` 成功追踪 3 层链式间接调用
+  - **Go/PHP AST 引擎闭包内变量回溯修复**
+    - Go：`_find_func` 支持 `func_literal`（匿名函数），收集所有候选函数/闭包后选择范围最小的（innermost scope），修复闭包内变量赋值无法被追踪的问题
+    - PHP：`analysis()` 新增 `_search_closures_for_analysis()` 递归搜索 Closure body，支持 `Route::get('/path', function(){...})` 等 Laravel 框架路由闭包内的 sink 检测
+  - **PHP AST StaticMethodCall/MethodCall 函数名匹配修复**
+    - `anlysis_function()` 中对 `StaticMethodCall` 拼接 `node.class_ + "::" + node.name`，对 `MethodCall` 拼接 `node.expr.name + "->" + node.name`
+    - 修复 EXTRA_SINKS 虚拟规则中 `DB::raw` 等 FQN 函数名无法匹配的问题
+  - **VirtualRule（虚拟规则）体系**
+    - `utils/api.py` 新增 `VirtualRule` 类，继承 `SingleRuleMixin`，支持 `match_mode`、`match`、`svid`、`language` 等属性
+    - `scan()` 入口为每个 `(pattern, svid)` 创建 VirtualRule 实例注入 rules 队列
+    - 修复 `main()` 缺失导致 AST 验证 AttributeError、pattern 末尾括号导致 regex 异常等问题
+  - **全语言规则统一继承 SingleRuleMixin**
+    - 114 条 CVI 规则全部从独立 `status=True/False` 改为继承 `SingleRuleMixin`，支持 `main()` 二次筛选
+  - **新增 Go/C 漏洞检测规则**
+    - Go：CVI-8009（XPath 注入）、CVI-8010（路径穿越）、CVI-8011（XML 外部实体注入）、CVI-8012（拒绝服务）、CVI-8013（开放重定向）
+    - C：CVI-9008（XPath 注入）、CVI-9009（命令注入回显）、CVI-9010（路径穿越）、CVI-9011（开放重定向）
+    - 新增 Go benchmark 9 个、C benchmark 8 个，全量回归通过（Go 17/17, C 16/16）
+  - **规则 main() 适配 grep 片段模式**
+    - grep 返回匹配片段而非完整行，`main()` 中 `\)` 截取参数的逻辑需要适配
+    - 修复 CVI-8002/8009/8011/8013/9010 的 `main()` 方法
+  - **三层修复函数体系（filter_functions）**
+    - L1：精确匹配替代字符串包含，避免 `str` 被误匹配为 `stripslashes` 中的子串
+    - L2：Python 函数定义追踪自动注册安全函数（Summary 继承）
+    - L3：规则级自定义修复函数（`extra_repair_functions` 支持）
+  - **全语言多层间接调用支持**
+    - Python：`import_map` 跨文件追踪 + `_trace_function_return` safe 函数检测
+    - JS/Java/C：多层间接调用（变量赋值链式追踪）
+    - Go：多层间接调用支持
+  - **静默异常修复（问题 4）**
+    - 7 处裸 `except:` / `except SyntaxError` → `except Exception as e:` + `logger.warning`
+    - 涉及 PHP（2 处）、Go（1 处）、Java（3 处）、JS（1 处）
+  - **其他修复**
+    - scanner.py：`language` 参数为 list 时 `language.lower()` 崩溃 → 遍历 list 分别处理
+    - `_parse_pom()`：Python 3.11 Element truthy bug（空 Element 被 `or` 短路误判）
+    - Go/C 函数调用返回值场景加入 `lookup_summary`，未确认时返回 code=3 而非 code=5
+    - Python builtin safe 函数包裹的参数不再误报为可控
+    - Go/C NewCore 正则支持 namespace/包前缀跨包调用匹配
+    - Python benchmark 扩充到 9 个测试用例
+- 2026-06-09
+  - KunLun-M 2.13.7
+  - **修复 multi_grep() 行号 bug（utils/file.py）**
+    - 原 chunked reading（1000字节/块）导致同一 chunk 内多匹配只取第一个、跨 chunk 行号不累加
+    - 改为全文 `read()` + 递进 `re.search()`，`line_number = full_text[:m.start()].count('\n') + 1`
+  - **修复间接调用(Arbitrary-function-call)跳过 CAST 验证（core/scanner.py）**
+    - 原 `is_indirect=True` 结果直接生成漏洞报告，不经过 `Core.scan()` CAST 验证
+    - 导致 Go 72 条误报（9 文件 × 8 规则各 1 次），任何非 sink 的 identifier 函数调用都被误报
+    - 修复：间接调用结果转换为 tuple 格式追加到 direct_results，统一走 CAST 验证
+    - Go 误报从 72 条降至 4 条（剩余 4 条为 CAST 确认参数可控但无法跨函数分析过滤的固有限制）
+  - **增强 6 语言 benchmark 运行器**
+    - 新增 `verify_line_content()`：从扫描结果提取行号，读取源文件对应行验证关键词
+    - 关键词匹配改为 ANY（NewCore 不同 CVI 匹配不同行）
+    - 修正 JS CVI ID（3101/3003）和 Go/PHP/Python expected_keywords
+  - **全语言间接调用检测修复（Go/PHP/Python/JS/C/Java）**
+    - PHP：`find_sinks` 递归遍历 AST 子节点（Block.nodes）修复 if 块内间接调用漏报；`_match_call_node` 支持字符串字面量回调 `call_user_func('system', $cmd)`；`scan_parser` 新增 `_handle_php_indirect_call` + indirect_map 快速路径
+    - Python：`find_sinks` 增加 `ast.Name` 赋值追踪（`f = eval; f(userInput)`）；`scan_parser` 新增 `_handle_python_indirect_call` + indirect_map 快速路径；修复行号类型转换 `str vs int`
+    - JS：`find_sinks` 增加 esprima `Identifier` callee 赋值追踪；修复 esprima 节点使用 `getattr`/`hasattr` 而非 dict 接口；`scan_parser` 新增 `_handle_js_indirect_call` + indirect_map 快速路径
+    - C：新增 `find_sinks` 函数（tree-sitter 赋值追踪函数指针 `int (*func)() = system; func(cmd)`）；`scan_parser` 新增 `_handle_c_indirect_call` + indirect_map 快速路径
+    - Java：`find_sinks` 新增方法引用赋值追踪（`Function<String, Process> execFunc = rt::exec`）；`scan_parser` 新增 `_handle_java_indirect_call` + indirect_map 快速路径；增加参数可控性 fallback（`parameters_back` 返回 -1 时做字面量/变量启发式判断）
+    - Go：修复 `scanner.py` find_sinks 中 `vul_function` 解析错误，`SinkName(class_=None, method='exec.Command')` 改为 `parse_sink_names()` 正确解析为 `SinkName(class_='exec', method='Command')`
+    - `matcher.py`：6 语言 `_scan_xxx` 全部传递 `indirect_map`
+    - 新增测试用例：PHP 30/31/32、Python 30/31、JS 30/31、C 32/33/34、Java TestIndirectExec/Safe、Go 22/23/24
+    - 6 语言 benchmark 全通过：Go 5/5、PHP 1/1、Python 1/1、JS 2/2、C 5/5、Java 2/2
+    - 回归测试全通过：cross-file 24/24、detection 16/16
+- 2026-06-09
+  - KunLun-M 2.13.6
+  - **C/Java NewCore 跨文件封装检测（code=5）完整实现**
+    - C 引擎：`engine.py` 新增 code=5 dict 格式处理（word boundary + negative lookahead），`autorule.py` 新增 C 参数提取分支，`cast.py` 补全 c/cpp/cc 语言支持
+    - Java 引擎：`parser.py` 3 处修改使 scan_parser 对形参返回 code=5 触发跨文件，`engine.py` 从空桩改为完整实现（dict/str 格式 + match2 排除定义行），`rule_generator.py` 新增 Java 分发分支，`autorule.py` 新增 Java 参数提取分支
+    - Java 类名限定符优化：code=5 返回 `ClassName.methodName` 而非纯方法名，grep 正则精确匹配特定类的封装调用，避免同名方法混淆
+  - **修复 10 个 NewCore 链路 bug**
+    - `matcher.py`：`_scan_java()` 缺少 `vustomize-match` 分支导致 NewCore 二次扫描返回 Unsupport Match；`_handle_vustomize_match()` 不处理 code==-1（Java CAST 返回值）
+    - `file.py`：`get_line()` 不兼容 `"1,14p"` 格式，`int("14p")` 崩溃，修复为 `rstrip('p')` + 单行兼容
+    - `cast.py`：`_is_co` UnboundLocalError（Java 分支 `getParameter` 匹配后 `continue` 导致循环结束访问未定义变量）；`getParameter` 被错误标记为不可控（`continue` 改为 `return True, 1, self.data, []`）
+    - `rule_generator.py`：`init_match_rule` 分发函数无 Java 分支
+  - **C NewCore Benchmark 测试（5 组 10 文件）**
+    - 覆盖场景：命令注入封装（CVI-9001）、格式化字符串封装（CVI-9002）、路径穿越封装（CVI-9004）、返回值传递（fgets→return→strcpy+system）、多 sink 封装
+    - 新增 `tests/c/run_newcore_tests.py` 统一运行器，5/5 PASS
+  - **Java NewCore Benchmark 测试（3 组 6 文件）**
+    - 覆盖场景：命令注入 CVI-6003（ExecUtils.executeCommand→Runtime.exec）、路径穿越 CVI-6004（FileUtils.readConfig→FileInputStream）、SQL 注入参考（SqlUtils→Statement.executeQuery，走 AST 路径非 NewCore）
+    - 新增 `tests/java/run_newcore_tests.py` 统一运行器，2/2 PASS
+  - **全语言统一 Benchmark 运行器**
+    - 为 PHP/Python/Go/JavaScript 新增 `run_newcore_tests.py`，与 C/Java 格式统一
+    - 6 语言 15/15 benchmark 全部通过
+    - PHP (1): CVI-1009 eval 跨文件封装
+    - Python (1): CVI-7000 os.system 跨文件封装
+    - Go (3): CVI-8001 exec.Command 基础封装 + 多层封装 + 安全封装
+    - JavaScript (3): CVI-3003 eval 跨文件 + CVI-3100 exec 解构导入 + 安全封装负面
+  - **回归测试全语言通过**：PHP/Python/Go/JS/Java/C/Solidity 无回归
+- 2026-06-08
+  - KunLun-M 2.13.5
+  - **JS/PHP 跨文件分析能力（NewFunction → NewCore 链路）**
+    - JS 引擎新增 `_parse_js_imports()`、`_build_js_func_index()`、`_try_cross_file_trace_js()` 三个核心函数
+    - 支持 CommonJS `require()` 对象属性访问（`utils.func()`）和解构导入（`{ func } = require()`）
+    - ESM `import/export` 在 esprima script 模式下可解析但不追踪（已知限制）
+    - PHP 引擎同步支持跨文件 `function_back`（include/require 内联模型）
+  - **修复 NewFunction → NewCore 完整链路的 6 层 bug**
+    - `matcher.py`：code=4 链路中 chain>1 被误判为配置型漏洞
+    - `scanner.py`：`newcore_function_list` 可变默认值导致多实例共享同一 dict
+    - `rule_generator.py`：`FileParseAll` 缺少 `language` 参数导致 JS 文件被过滤
+    - `engine.py`：`init_match_rule` 正则模板修复，支持 `FunctionDeclaration` AST 节点
+    - `scanner.py`：`scan_single` 的 `files` 参数扩展名映射修正（`.javascript` → `.js`）
+    - `scanner.py`：`newcore_function_list` 默认值从 `list/dict` 改为 `None` + `or {}`
+  - **跨文件 Benchmark 测试（12 JS + 2 PHP，117 passed）**
+    - 6 组 JS benchmark：CommonJS 对象属性 / 解构导入 / ESM import / 安全封装(负面) / exports 赋值 / setTimeout 封装
+    - 信号测试：code=4 NewFunction 信号生成（13a/17a/18a）
+    - 端到端测试：`scan_single` 完整链路验证（13/14/16/17/18 + PHP）
+    - ESM 跨文件预期不检出（esprima script 模式限制）
+- 2026-06-06
+  - KunLun-M 2.13.4
+  - **Source Discovery 预处理模块全语言完成**
+    - 新增 `core/core_engine/{php,javascript,python,go,java,c}/source_discovery.py`（6 个语言引擎）
+    - 功能：框架检测（Spring/Gin/CGI 等）、内置 source 识别、AST 遍历自动发现用户自定义 source producer
+    - 各引擎 `scan_parser()` 集成 Source Discovery，在函数回溯中检查 source producer 标记
+  - **Source Discovery benchmark 测试（10 用例）**
+    - 新增 `tests/test_source_discovery.py`，覆盖 PHP/JS/Go/C 4 语言
+    - 测试场景：自定义 source producer 检出、安全函数 vs 不安全函数区分
+    - 新增 benchmark 文件 8 个（PHP 2 + JS 2 + Go 1 + C 2 + discrimination 复用）
+  - **C 引擎修复**
+    - `function_back_c()` 增加 Source Discovery source producer 检查，使 `system(read_user_input())` 能正确检出
+  - 回归测试 118/118 全通过（含 10 个新 Source Discovery 测试）
+- 2026-06-05
+  - KunLun-M 2.13.3
+  - **修复 PHP 引擎字符串拼接中方法调用参数丢失**
+    - `get_binaryop_deep_params()` 新增 `MethodCall`/`StaticMethodCall`/`ObjectProperty` 三种节点类型处理
+    - 修复 `$obj->method($_GET['x'])` 和 `Class::method($_GET['x'])` 在字符串拼接场景（BinaryOp）中被静默丢弃导致可控参数漏报的问题
+- 2026-06-05
+  - **分支约束 benchmark 90 用例：89/90 通过（98.9%）**
+    - `BranchConstraint.negate()` 支持 `type_validated`/`regex_validated` 取反（修复 else 分支误阻断）
+    - JS: 新增 `typeof x === 'number'` 验证函数检测
+    - JS: 修复 `RegExpLiteral.test()` 检测（esprima 将正则字面量解析为 `RegExpLiteral` 而非 `Literal`）
+    - Java: `_get_java_expr_name()` 支持 `MethodInvocation`（修复 `Character.isDigit(port.charAt(0))` 参数提取）
+    - C: 修复 `_extract_constraints_from_c_expr` 中 `argument_list` children 过滤未排除括号（ctype 验证函数失效）
+    - Go: `scan_parser()` 添加 `_check_go_branch_constraints` 调用（与 `analysis_params` 一致）
+    - 端到端测试扩展至 90 个用例，覆盖 6 语言全分支类型 + 验证函数
+    - 剩余 1 个失败：PHP preg_match 非严格正则测试（PHP 引擎 echo/mysql_query 参数追踪局限，非分支约束问题）
+- 2026-06-04
+  - KunLun-M 2.13.2
+  - **7 语言引擎回溯分析设计文档（docs/design/）**
+    - 新增扫描流水线整体架构设计文档
+    - 新增 PHP/JavaScript/Python/Java/Go/C-C++ 引擎回溯分析设计文档（6 份）
+    - 新增共享模块设计文档（function_summary / branch_constraint / trace_cache / builtin_knowledge）
+    - 包含各引擎从 Sink 到最终判定漏洞成立的完整回溯链路分析
+  - **分支约束追踪补全 — C 三元 / Python match/case / while 循环 / JS ForStatement 修复（6 语言）**
+    - C/C++: 新增三元表达式（conditional_expression）约束追踪
+    - Python: 新增 match/case（Python 3.10+）分支约束追踪，兼容 Python < 3.10
+    - 6 语言新增 while 循环条件等值约束检查（PHP/Python/JS/Java/Go/C）
+    - JS: 修复 `_parameters_back_impl` 缺少 ForStatement/ForInStatement/ForOfStatement 处理的功能性缺陷
+    - 端到端测试扩展至 56 个用例，全部通过（新增 10 个 while + 2 个 Python match + 2 个 C 三元）
+- 2026-06-03
+  - **C/C++ if/else + switch/case 分支约束追踪**
+    - 新增 `_extract_constraints_from_c_expr`：支持 `strcmp(x,"v")==0`、`x == value`、`!` 取反、`&&`/`||` 组合
+    - 新增 `_check_sink_branch_constraints`：在 `scan_parser` 的直接可控源和反向追踪两条路径中检查分支约束
+    - 支持 if/else 分支约束（`==`/`!=`/`in`/`not in`）和 switch/case（非 default 阻断）
+    - 端到端测试 46/46 全通过（含 7 个新增 C 测试用例）
+  - **switch/case 分支约束追踪（PHP/JS/Java/Go 四语言）**
+    - PHP: 修复 phply `Default` 节点无 `expr` 属性导致 `AttributeError` 被静默吞掉的问题
+    - Java: 修复 javalang default case 的 `case` 属性为空列表（非 `None`）的判断
+    - Java: 修复 switch default case 未找到赋值时提前返回 `-1`，改为 fallthrough 继续搜索 switch 前的语句
+    - JS: 新增 `SwitchStatement` 分支约束追踪（sink 在非 default case 时阻断）
+    - Go: 修复 `trace_go_stmt` 中 switch 分支 `UnboundLocalError`（`lineno` 变量未定义），修正 AST 节点类型名称
+    - Go: `_search_in_switch` 增加对 `default_case` 的搜索
+    - 测试套件扩展至 39 个用例，全部通过（新增 8 个三元表达式 + 6 个 switch/case + 2 个 JS switch）
+  - **分支约束端到端测试套件**
+    - 新增 `tests/branch_constraint/` 目录，23 个端到端测试用例覆盖 PHP/Python/JS/Java/Go 5 种语言
+    - 覆盖场景：== 约束阻断（误报消除）、无约束真阳性、else 分支真阳性、!= 约束不阻断、枚举约束
+    - 使用 `run_tests.py` 运行器，通过 subprocess 调用 `ci_scan.py` 避免 Django DB 连接缓存问题
+  - **修复 Python parser 分支约束回溯 bug**
+    - `ast.If` 处理中，分支体内回溯返回 `code 3` (unconfirmed) 时直接 return，导致外层 `_trace_in_stmts` 循环终止
+    - 修复：code 3/-1 时返回 `None`，让外层循环继续追踪 if 语句之前的赋值语句
+- 2026-06-01
+  - KunLun-M 2.13.1
+  - **内置知识库重构：统一合并 `core/internal_defines/` 旧系统 → `builtin_knowledge.py` 新系统**
+    - 删除 `core/internal_defines/` 整个目录（8 个文件），2669 条白名单迁移至各语言 `builtin_knowledge.py`
+    - PHP：236→2055 条（+1804 普通内置函数 + 15 魔术方法）
+    - JS：389→1140 条（+731 全局对象 + 22 String/Array 原型方法）
+    - 6 语言 parser.py 全部移除 `internal_defines` 引用，改为 `BUILTIN_KNOWLEDGE` 统一接口
+  - **新增 `param_flow` 字段：支持函数参数间数据传递**
+    - 格式：`{输出参数索引: 输入参数索引}`，表达参数间数据流（如 `strcpy(dst, src)` → `{0: 1}`）
+    - `passthrough` 语义回归"返回值依赖哪些参数"，不再混用"参数间数据流"
+    - 6 语言 parser.py 全部适配：`safe and not passthrough` → `safe and not passthrough and not param_flow`
+  - **C 知识库大幅扩展**
+    - 98→201 条，合并旧系统 195 条 C 标准库函数
+    - 35 个安全敏感函数精确标注 safe/passthrough/param_flow
+    - parser.py 新增 `_process_call_for_propagation()` 支持函数调用输出参数传播（fgets/scanf/getline）
+  - **Java 知识库扩展**
+    - 新增 JDK 核心安全函数：Runtime.exec/ProcessBuilder.start/Statement.execute/Class.forName 等 8 条
+    - 新增 JDBC PreparedStatement 系列（setString/setInt/executeQuery）5 条，含 param_flow
+    - 新增集合类 param_flow：HashMap.put/ArrayList.add/LinkedList.add/HashSet.add
+    - 新增 Servlet attribute param_flow：HttpServletRequest.setAttribute/ServletContext.setAttribute
+  - **Python 知识库扩展**
+    - 新增代码执行/命令执行 sink：eval/exec/os.system/subprocess.*/os.execv 等 10 条
+    - 新增输入源：input/open/urllib.request.urlopen
+  - **PHP 知识库安全修正**
+    - echo/print/print_r/header safe→False（XSS/CRLF 注入汇点）
+    - 新增 eval 条目（之前完全缺失）
+    - exec/system/shell_exec/passthru/proc_open/popen/assert/call_user_func safe→False
+    - file_get_contents/fread/mysqli_query 补 passthrough
+    - 新增 pg_query/pg_query_params + PDO::query/exec/PDOStatement:: 系列 14 条
+    - preg_match_all/mb_parse_str 补 param_flow
+    - printf/sort/asort/ksort/parse_str/extract passthrough 修正
+  - **JS 知识库安全修正**
+    - 59 个 String/Array 原型方法 passthrough [0]→["this"]（数据来源是 this 而非 arg[0]）
+    - 新增 12 个 DOM sink：document.write/innerHTML/outerHTML/location.*/XMLHttpRequest/$.ajax 等
+    - fetch/open/postMessage/print safe→False
+    - 8 个 HTML 包装方法（anchor/big/fontcolor 等）safe→False
+    - link passthrough 补 arg[0]；_.assignIn 补 param_flow
+  - **Go/Java 知识库修正**
+    - Go：删除 5 组重复条目（fmt.Sprintf/fmt.Errorf/strings.TrimSpace/real）
+    - Go：新增 template.Execute/ExecuteTemplate + param_flow
+    - Go：fmt.Fprintf passthrough 补变长参数
+    - Java：删除重复 hashCode；getHeaderNames passthrough 修正
+  - **Python 知识库修正**
+    - pandas.read_clipboard safe→False
+- 2026-06-01
+  - KunLun-M 2.13.0
+  - **新增 C/C++ 静态代码扫描引擎**
+    - 基于 tree-sitter 的 AST 语义分析引擎（`core/core_engine/c/`），支持 C/C++ 源文件扫描
+    - `scan_parser()`: 反向污点追踪，支持赋值链、指针声明、函数返回值、跨函数追踪
+    - `_build_func_def_index()`: 预建函数定义索引，支持函数体内 sink 追踪
+    - `function_back_c()`: 跨函数追踪，支持 `deps` 机制（返回值依赖分析）
+    - `_propagate_controllable_in_body()`: 函数体内可控性传播，支持函数调用输出参数（fgets/scanf）
+    - 内置知识库新增 C 标准库函数（libc 90+ 条），含 safe/passthrough/repair 属性标注
+  - **新增 7 条 C/C++ 漏洞规则**（CVI-9001 ~ CVI-9007）
+    - CVI-9001: 命令注入（system/popen/exec/execl 等）
+    - CVI-9002: 格式化字符串漏洞（printf/fprintf/sprintf/snprintf 等）
+    - CVI-9003: 缓冲区溢出（strcpy/strcat/gets 等）
+    - CVI-9004: 路径穿越（fopen/access 等）
+    - CVI-9005: 整数溢出（malloc/calloc/realloc 参数）
+    - CVI-9006: 环境变量注入（setenv/putenv 等）
+    - CVI-9007: 任意文件读取（open/read 等）
+  - **新增 7 个 CI 测试用例**（`ci_target/` 下 C 文件），覆盖全部 7 条规则
+  - **新增 24 个 Benchmark 测试文件**（`tests/c/`），覆盖 22 个漏洞场景 + 2 个误报排除
+  - **CI 预期表更新**
+    - `ci_target/expected.json` 新增 C/C++ 7 条预期（CVI-9001~9007）
+    - `ci_target/expected.json` 新增 Java CVI-6023/CVI-6038 预期（消除额外检出警告）
+  - **依赖更新**
+    - `requirements.txt` 新增 `tree-sitter-c` 和 `tree-sitter-cpp`
+  - **基础设施改动**
+    - `.gitignore` 添加 `!rules/c/` 白名单（C 规则文件入仓库）
+    - `.gitignore` 添加 `!tests/c/` 白名单（C 测试文件入仓库）
+- 2026-05-29
+  - KunLun-M 2.12.0
+  - **Node.js 扫描能力扩展（Phase 1）**
+    - JS 预处理限制从硬编码（3000字符/500行）改为格式启发式（avg_line_len>500跳过混淆代码），支持 Node.js 大文件
+    - 内置知识库新增 159 条 Node.js 核心 API（child_process/fs/http/crypto/vm/Buffer/path 等），总计 389 条
+    - 新增 46 个 Node.js 服务端可控源（Express/Koa/Hapi/Fastify/process/原生 http）
+    - 新建 `rules/nodejs/` 目录，9 条 Node.js 规则（CVI 3100-3108）：命令注入/路径穿越/SSRF/代码注入/SQL注入/反序列化/开放重定向/XXE/ReDoS
+    - Rule 加载器支持语言别名映射（javascript→nodejs），自动扫描 `rules/nodejs/` 目录
+    - 新增 `rules/tamper/demo_nodejs.py`：Node.js 修复函数和可控源配置
+  - **JS AST 引擎回调函数追踪支持**
+    - `analysis_callexpression` 新增 else 分支：当 callee 是 MemberExpression（如 `app.get`）但 arguments 中有 FunctionExpression 回调参数时，递归进入回调体分析
+    - 构造 `callback_back_node` 包含回调体内节点，使 `parameters_back` 能找到函数体内的变量定义
+    - 支持 Express/Koa/Fastify 等框架的回调模式：`app.get('/path', function(req, res) { exec(req.query.cmd) })`
+  - **JS AST 引擎增强（ArrowFunction / 嵌套回调 / ClassDeclaration / async-await）**
+    - 支持 ArrowFunctionExpression 作为回调参数的参数追踪
+    - 支持嵌套回调模式：外层回调内部 CallExpression 的右值回溯（如 `fs.readFile` 内的 `fs.writeFile`）
+    - 支持 ClassDeclaration 方法体分析 + `this` 属性追踪（`this.config` 跨方法传播）
+    - 支持 async/await：esprima 开启 tolerant 模式，新增 AwaitExpression/TryStatement 处理
+    - 修复 StringLiteral 分支（ObjectExpression Property key 统一为 StringLiteral）
+    - Promise callback 摘要追踪：追踪 `resolve(value)` 的依赖注入
+    - NewFunction 误报修复：vul_lineno >= function_lineno 时跳过
+    - VariableDeclaration 无条件追加 back_node，解决函数内局部变量回溯
+  - **grep 行号计算修复**
+    - 修复 fpc_loose 等正则前缀 \s 消费换行符导致的行号偏移（-1）
+    - LRnumber 计算增加 m.group(0).count('\n') 补偿被匹配消费的换行
+  - **Go parser fallback 移除**
+    - 移除 tree-sitter ImportError 的 try/except 静默降级，改为直接 import
+    - 缺失模块时直接报错退出（与 PHP/JS/Python/Java 一致）
+  - **CI 测试完善**
+    - 新增 5 语言 CI 测试用例（PHP/JS/Java/Python/Go 各 1 个代表性检出）
+    - 新增 `ci_target/cmd_inject.java`（ProcessBuilder 命令注入）
+    - 新增 `ci_target/xss.js`（XSS document.write）
+    - CI 对比模式：expected.json 驱动的 expected_comparison
+- 2026-05-29
+  - KunLun-M 2.11.1
+  - **规则同步无感化**
+    - RuleCheck/TamperCheck 去除 `input()` 交互，统一自动以文件内容覆盖数据库
+    - Console 模式入口的规则同步改为静默执行（debug 级别日志）
+    - Scan 模式入口新增自动规则同步（此前完全缺失）
+    - 文档简化：去掉 `config load` / `config loadtamper` 手动步骤
+  - **Console 模式多项修复**
+    - `suggested_commands()` 按 `current_mode` 返回对应命令列表
+    - 语言列表补全 python/java/go/solidity
+    - `show options` 日志级别从 debug 改为 info
+    - `exit()` 改为 `return` 避免杀进程
+    - `back` 清理 `result_task_id`/`result_obj` 状态
+    - `scan` 支持路径参数直接设置 target
+    - 进入 scan 模式自动显示 status
+    - `check_log` 改为读文件尾部 50 行
+    - 新增 `complete_load` / `complete_search` 补全
+- 2026-05-29
+  - KunLun-M 2.11.0
+  - **Go 引擎重构：正则→纯 AST 追踪**
+    - 移除正则分析，`_trace_variable_in_lines_impl` 全面改为 tree-sitter AST 追踪
+    - 新增纯文本 fallback 追踪机制（CI 环境无 tree-sitter 时自动降级）
+    - 预建函数定义索引（`_func_def_index`），`function_back_go` 按名查表定位函数体
+    - `function_back_go` 新增 callee 函数体 sink 追踪逻辑
+    - 跨文件 import 解析和精确函数定位（`_trace_param_at_call_sites_ast`）
+  - **函数摘要系统（5 语言通用）**
+    - 新增 `core/core_engine/function_summary.py`：数据结构 + 缓存管理器（`SummaryCacheManager`）
+    - Go 引擎：`summary_generator.py` + 消费端集成 + 递归分析自定义方法调用 + 缓存持久化
+    - Python 引擎：`summary_generator.py` + 消费端集成
+    - PHP 引擎：`summary_generator.py` + 消费端集成
+    - JavaScript 引擎：`summary_generator.py` + 消费端集成
+  - **Java 引擎反向追踪重构**
+    - 从前向追踪重构为反向追踪模式，和 Go/Python/PHP/JS 四引擎统一
+  - **行号传递统一**
+    - Python 引擎：重构为返回值三元组 `(code, source, source_lineno)` 方式
+    - Go 引擎：重构为返回值元组 `(code, source_lineno)` 方式
+    - chain source 行号使用实际赋值行号而非 sink 行号
+  - **Bug 修复**
+    - `utils/file.py`：修复 `check_comment` 单行注释穿透 bug（注释内容未跳过导致 grep 误匹配）
+  - **CI 修复**
+    - 修复 `.gitignore` 导致 Go 规则文件（CVI_8001~8007）和 `rules/tamper/demo_go.py` 未入仓库的问题
+    - 修复 `_scan_go()` 中 `init_php_repair()` 的 `ModuleNotFoundError` 导致所有 Go 规则静默失败
+- 2026-05-27
+  - KunLun-M 2.10.2
+  - **新增 Go 语言扫描支持**
+    - 新增 `core/core_engine/go/` 模块：基于正则+行扫描的反向污点追踪引擎
+    - `scan_parser()`: 遍历所有参数追踪污点，支持 exec.Command("sh", "-c", cmd) 等多参数场景
+    - `analysis_params()`: 供 CAST 跨文件分析调用
+    - 内置知识库 646 条（Go 标准库 + Gin/Echo/Fiber/Beego/Chi 等框架）
+    - 新增 8 条 Go 漏洞规则（CVI 8000 系列）
+      - CVI_8001: 命令注入（exec.Command/exec.CommandContext）
+      - CVI_8002: SQL 注入（db.Query/db.Exec/gorm.DB.Raw）
+      - CVI_8003: XSS（template.HTML 类型转换/fmt.Fprintf）
+      - CVI_8004: 文件操作（os.Open/os.Create/os.ReadFile）
+      - CVI_8005: SSRF（http.Get/http.Post/http.NewRequest）
+      - CVI_8006: 路径穿越（filepath.Join + 用户输入）
+      - CVI_8007: 不安全反序列化（json.Unmarshal/yaml.Unmarshal）
+      - CVI_8008: 信息泄露（log.Printf/fmt.Printf）
+    - 新增 `rules/tamper/demo_go.py`: Go 修复函数和可控输入源配置
+  - **基础设施改动**
+    - `const.py`: ext_dict 新增 `go: [".go"]`，ext_comment_dict 新增 `go: ["//"]`
+    - `matcher.py`: 新增 `_scan_go()` 方法 + dispatch 映射
+    - `cast.py`: 新增 Go 语言支持（languages/regex/analysis_params）
+    - `pretreatment.py`: 新增 Go 文件预处理
+    - `trace_cache.py`: 支持 go 语言
+  - **Bug 修复**
+    - `utils/file.py`: 修复 `file_info` 路径前导 `/` 问题
+    - `utils/file.py`: 修复 `get_path` 路径拼接问题（`os.path.join` 绝对路径）
+    - `utils/file.py`: `check_comment` 支持 Go 注释
+  - **CI 验证**：所有预期漏洞均已检出
+- 2026-05-27
+  - KunLun-M 2.10.1
+  - **内置知识库拆分到各语言目录**
+    - 将单一 `builtin_knowledge.py` 拆分为四个语言独立文件
+    - `core/core_engine/python/builtin_knowledge.py` - Python + Django/Flask/SQLAlchemy 等
+    - `core/core_engine/php/builtin_knowledge.py` - PHP + Laravel/ThinkPHP/WordPress 等
+    - `core/core_engine/javascript/builtin_knowledge.py` - JS + Express/Vue/React 等
+    - `core/core_engine/java/builtin_knowledge.py` - Java + Spring/MyBatis 等
+    - `trace_cache.py` 改为动态加载，按语言自动导入对应知识库
+    - 各引擎 import 路径更新为语言独立模块
+  - **CI 验证**：#125 通过
+- 2026-05-27
+  - KunLun-M 2.10.0
+  - **三引擎统一 deps 机制：函数返回值追踪重构**
+    - 核心原则：函数体是封闭作用域，`function_back` 不再在函数体内调 `parameters_back`，消除循环递归风险
+    - 新机制：函数追踪只分析返回值依赖哪些形参，通过形参→实参映射返回 `('deps', [变量名列表])`，由外层继续向上回溯
+    - Python 引擎：`_trace_function_return` 返回 deps，`_trace_in_stmts` 收到后跳过当前赋值语句继续查找
+    - PHP 引擎：新增 `_analyze_return_deps()` + `_collect_var_names()`，保留 `scan_function_stack` 安全网
+    - JavaScript 引擎：新增 `_collect_js_var_names()`，保留 code=4 兼容路径，4 个调用点统一处理 deps
+  - **Python 扫描引擎增强**
+    - 新增 XPath 注入规则 CVI-7012（`lxml.etree.xpath`）
+    - 新增 `_expr_to_str` 链式调用展开（`a.b().c()` 不再截断）
+    - 新增 `_collect_names` Attribute 节点收集（`obj.prop` 同时收集完整名和基础变量名）
+    - `parameters_back` 加 `_trace_visited` 模块级去重集合防循环递归
+    - `_collect_names` 加 `_depth > 20` 深度限制防 AST 递归溢出
+    - `init_match_rule` 新增 Python 分支，修复 `test_class.py` TypeError
+    - grep 行号机制优化：每 10 行块内不再只取第一个匹配
+  - **Python 检出率提升**：benchmark 15 个漏洞点（原 10 个），base_case 检出率 78%，special_case 过滤函数场景突破
+  - **CI 验证**：#112-#115 全部通过
+- 2026-05-26
+  - KunLun-M 2.9.5
+  - **新增 Python 语言扫描支持**
+    - 新增 `core/core_engine/python/` 模块：基于内置 `ast` 模块的反向污点追踪引擎
+    - `scan_parser()`: 分析敏感函数参数可控性，支持赋值链、with/for/if/try 控制流、函数内跨方法追踪
+    - `analysis_params()`: 供 CAST 跨文件分析调用，返回可控性 code + 追踪链
+    - `parameters_back()`: 核心反向污点追踪，支持 6 种可控来源识别（赋值/函数调用/二元运算/f-string/变量传播/函数参数）
+  - **新增 8 条 Python 漏洞规则**（CVI 2000 系列）
+    - CVI_2000: 命令注入（os.system/subprocess/exec）
+    - CVI_2001: 代码执行（eval/exec/compile/__import__）
+    - CVI_2002: SQL 注入（execute/cursor.execute）
+    - CVI_2003: 不安全反序列化（pickle/yaml/marshal/shelve）
+    - CVI_2004: SSRF（requests/urllib/http.client）
+    - CVI_2005: 文件操作（open/shutil/os.path）
+    - CVI_2006: XSS/SSTI（render_template_string/Markup/jinja2）
+    - CVI_2007: 信息泄露（DEBUG=True/stack_trace）
+  - **基础设施改动**
+    - `const.py`: ext_dict 新增 `python: [".py", ".pyw"]`
+    - `pretreatment.py`: 新增 Python `ast.parse()` 预解析分支，加入 `could_ast_pase_lans`
+    - `matcher.py`: 新增 `_scan_python()` 方法 + match dispatch
+    - `cast.py`: CAST.languages 新增 `'py': "python"`，`is_controllable_param` 新增 Python 分支
+- 2026-05-26
+  - KunLun-M 2.9.4
+  - **依赖升级：esprima → lesprima**
+    - 从 `esprima==4.0.1` 切换为 `lesprima>=2.0.0`
+    - lesprima 是 esprima-python 的增强 fork，支持 ES2018–ES2025 语法，修复 22 个上游 parser bug
+    - PyPI 包名为 `lesprima`，import 名仍为 `esprima`，代码无需改动
+- 2026-05-25
+  - KunLun-M 2.9.3
+  - **依赖升级：phply → lphply**
+    - 从 `phply==1.0.0` 切换为 `lphply>=2.0.0`
+    - lphply 是 phply 的增强 fork，支持 PHP 5.6–8.5 新语法（null coalescing、match、enum、readonly、property hooks、pipe 等）
+    - 移除 `_repair_php_code_for_parser` 中的 `??` null coalescing 降级修复（lphply 原生支持）
+  - **PHP 扫描引擎适配**
+    - 适配 `NullsafeMethodCall` / `NullsafeProperty` AST 节点（`$obj?->method()` / `$obj?->prop`）
+    - parser.py 31 处 isinstance 检查统一使用类型别名元组，向前兼容
+    - `BASE_FUNCTIONCALL_LIST` 增加 `NullsafeMethodCall` / `NullsafeProperty`
+- 2026-05-22
+  - KunLun-M 2.9.2
+  - **依赖升级：javalang → ljavalang**
+    - 从 `javalang>=0.13.0` 切换为 `ljavalang>=2.0.2,<3`
+    - ljavalang 是 javalang 的增强 fork，修复链式调用 AST 解析 bug、支持 Java 9-22 新语法、零外部依赖
+    - 扫描测试验证：TestVulns.java 21 条检出、JavaVul base_vul 46 条（与旧 javalang 一致）、组件靶场全部正确命中
+- 2026-05-22
+  - KunLun-M 2.9.1
+  - **修复 Java 链式调用漏报**
+    - javalang 解析器将链式方法调用（如 `Runtime.getRuntime().exec(cmd)`、`new ProcessBuilder(cmd).start()`）中的后续方法放入扁平的 `selectors` 列表，导致 sink 搜索和污点传播遗漏链式调用中的关键方法
+    - 新增 `_flatten_chained_calls()` 辅助函数展开 selectors，并在 sink 搜索、变量收集、对象污点传播三个环节增加 selectors 遍历支持
+    - 保留源码文本 fallback 作为兜底
+  - javalang 依赖规范化：从本地 Ljavalang fork 切回 PyPI 默认库（`javalang>=0.13.0`），链式调用兼容性已由 parser 侧修复覆盖
+- 2026-05-21
+  - KunLun-M 2.9.0
+  - **新增 Java 静态代码扫描引擎**
+    - 基于 javalang AST 的语义分析，支持对象级污点传播、链式调用追踪、源码文本 fallback 传播
+    - 支持 6 种扫描模式：`regex-only`、`function-param-regex`、`java-function-param-regex`、`function-param-controllable`、`regex-return-regex`、`framework-dependency`
+    - 新增 `framework-dependency` 模式：解析 pom.xml 依赖版本 + 语义化版本比较 + 配置特征二次确认 + parent 版本继承
+  - **新增 58 条 Java 规则**（CVI-6001 ~ CVI-6068），覆盖 20+ 漏洞类型：
+    - 代码级规则：SQL 注入、XSS、命令执行、路径穿越、SSRF、XXE、反序列化、文件上传、SpEL/OGNL 注入、LDAP 注入、CORS、JWT、JNDI、Log4Shell、SSTI 等
+    - 框架级规则（`framework-dependency` 模式）：
+      - Apache Shiro：反序列化(CVE-2016-4437)、Padding Oracle(CVE-2019-11963)、认证绕过(CVE-2020系列)、弱密钥
+      - Apache Struts2：OGNL 注入(S2-001~062)、Jakarta Multipart(S2-045)、RCE(S2-048/057/059)
+      - Log4j2：JNDI RCE / Log4Shell (CVE-2021-44228)
+      - Fastjson：autoType 反序列化(≤1.2.24)、autoType 绕过(1.2.25-1.2.47)、safeMode 绕过(1.2.68-1.2.80)
+      - Commons Collections：InvokerTransformer 反序列化链(≤3.2.1)
+      - XStream：反序列化 RCE (≤1.4.14)
+      - Jackson-databind：反序列化 CVE (≤2.9.9)
+      - Spring Boot Actuator：未授权访问
+      - Commons FileUpload：反序列化 RCE (≤1.3.2)
+    - 组件级规则：Fastjson、Log4j、XStream、Jackson、HSQLDB、Hibernate、Druid 等组件漏洞检测
+  - **误报治理**
+    - function 类型规则：match 正则收窄 + main() 过滤优化，修复版误报从 108 条降至 41 条（-62%）
+    - only-regex 类型规则：误报率 >20% 的规则（CVI-6024/6033/6039）禁用
+  - **JavaVul 靶场验证**：20+ 靶场全面测试通过，安全版本零误报
+- 2026-05-19
+  - KunLun-M 2.8.2
+  - 新增 Rule 类热重载支持
+  - 新增自定义 HTML 报告模板功能（基于 Jinja2）
+  - 重构 engine.py，拆分为 filters/matcher/scanner/rule_generator 四个模块
+  - 增强 VulnerabilityResult 数据模型，消除重复代码
+  - 解耦 utils/status.py 与 web 层，采用依赖注入方式
+  - 安全加固：uploadlog 与 API token 检查、错误处理、性能与日志统一
+  - 修复 settings_ci 中缺失的 HTML_TEMPLATE_PATH 配置项
+  - 恢复 core/ 模块中的英文日志消息
+  - 新增英文 README 并设为默认，中文移至 README.zh.md
+  - 移除 README 中的社区工具部分
+- 2026-05-08
+  - KunLun-M 2.8.1
+  - CLI 扫描结果导出增强
+    - JSON：补充 `meta/summary`，并规范化 `vulnerabilities` 字段（如 `severity/location/relative_file/is_unconfirm`）
+    - 新增 `-f md`：生成 Markdown 报告（包含全部漏洞详情）
+    - `-f html`：单文件自包含 HTML 报告，支持搜索、按严重度筛选、展开/收起全部，并对报告 UI 进行浅色高级风格重构（统计卡、概览卡片行、项目信息区）
+  - 文档更新
+    - `docs/cli.md`、`README.md` 补充导出示例与说明
+- 2026-05-08
+  - KunLun-M 2.8.0
+  - 新增内置的Skill，支持AI Agent（OpenClaw / Codex / Claude Code / Hermes 等）一键接入工具，快速扫描漏洞
+- 2026-05-07
+  - KunLun-M 2.7.4
+  - 新增CI相关支持，支持快捷接入CI扫描流程
 - 2026-05-07
   - KunLun-M 2.7.3
   - Web Dashboard UI/UX 优化与暗色模式修复
@@ -14,13 +554,11 @@
 - 2026-04-30
   - KunLun-M 2.7.2
   - 为组件扫描漏洞增加开关，并增加新数据源，默认关闭
-
-* 2026-04-30
+- 2026-04-30
   - KunLun-M 2.7.1
   - 为phpunserializechain增加生成poc功能，并测试PHPSerialize-labs完全支持
   - 修复部分bug
   - 更新文档
-
 - 2026-04-27
   - KunLun-M 2.7.0
   - 感谢AI时代，让我以极低的代价可以重新维护更新该项目，后面将会在这个基础上做更大胆的尝试
@@ -332,4 +870,3 @@
 - 2017-9-7
   - Cobra 2.0完成
   - 改写grep以及find，提供更好的底层支持
-

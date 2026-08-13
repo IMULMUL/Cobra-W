@@ -32,16 +32,16 @@ from core.pretreatment import Pretreatment
 from phply import phpast as php
 
 files = [('.php', {'list': ["v_parser.php", "v.php"]})]
-ast_object.init_pre(PROJECT_DIRECTORY + '/tests/vulnerabilities/', files)
+vul_dir = PROJECT_DIRECTORY + '/tests/vulnerabilities/'
+ast_object.init_pre(vul_dir, files)
 ast_object.pre_ast_all(['php'])
 
-
-target_projects = PROJECT_DIRECTORY + '/tests/vulnerabilities/v_parser.php'
-target_projects2 = PROJECT_DIRECTORY + '/tests/vulnerabilities/v.php'
+target_projects = vul_dir + 'v_parser.php'
+target_projects2 = vul_dir + 'v.php'
 
 with open(target_projects, 'r') as fi:
     code_contents = fi.read()
-with open(target_projects, 'r') as fi2:
+with open(target_projects2, 'r') as fi2:
     code_contents2 = fi2.read()
 
 sensitive_func = ['system']
@@ -51,11 +51,19 @@ param = '$callback'
 lineno2 = 10
 
 
+def _reinit_vul_php():
+    """重新初始化 vulnerabilities 目录的 PHP AST"""
+    ast_object.init_pre(vul_dir, files)
+    ast_object.pre_ast_all(['php'])
+
+
 def test_scan_parser():
+    _reinit_vul_php()
     assert scan_parser(sensitive_func, lineno, target_projects)
 
 
 def test_anlysis_params():
+    _reinit_vul_php()
     assert anlysis_params(param, target_projects2, lineno2)
 
 
@@ -231,14 +239,15 @@ $s = "($a)() should stay";
 
 def test_repair_php_code_for_parser_null_coalesce():
     """
-    回归测试：PHP7 null coalescing（??）语法应被降级修复为可解析形式。
+    回归测试：lphply >= 2.0.0 原生支持 ?? (null coalescing) 语法，
+    不需要降级修复，代码应保持不变。
     """
     code = """<?php
 $a = $_GET["name"] ?? "guest";
 """
     repaired = Pretreatment._repair_php_code_for_parser(code)
-    assert '??' not in repaired
-    assert '?:' in repaired
+    # lphply 原生支持 ??，不再降级为 ?:
+    assert '??' in repaired
 
 
 def test_pre_ast_php_null_coalesce_operator():

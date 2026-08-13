@@ -1,0 +1,52 @@
+{
+  "meta": {
+    "target": "/home/ubuntu/.hermes/hermes-agent/Kunlun-M/tests/php",
+    "task_id": 9,
+    "project_id": 9,
+    "started_at": "2026-06-10T03:39:41.230194+00:00",
+    "finished_at": "2026-06-10T03:39:41.712827+00:00",
+    "fail_on": "none",
+    "include_unconfirm": false,
+    "with_vendor": false,
+    "settings_module": "Kunlun_M.settings_ci",
+    "mode": "threshold"
+  },
+  "summary": {
+    "total": 2,
+    "by_severity": {
+      "critical": 2,
+      "high": 0,
+      "medium": 0,
+      "low": 0
+    },
+    "max_severity": "critical"
+  },
+  "vulnerabilities": [
+    {
+      "id": 55,
+      "cvi_id": "1011",
+      "rule_name": "RCE",
+      "severity": "critical",
+      "language": "php",
+      "file": "30_indirect_exec.php:13",
+      "is_unconfirm": false,
+      "result_type": "Arbitrary-function-call",
+      "source_code": "$func()"
+    },
+    {
+      "id": 56,
+      "cvi_id": "1011",
+      "rule_name": "RCE",
+      "severity": "critical",
+      "language": "php",
+      "file": "31_indirect_callback.php:11",
+      "is_unconfirm": false,
+      "result_type": "Arbitrary-function-call",
+      "source_code": "call_user_func()"
+    }
+  ],
+  "exit": {
+    "code": 0,
+    "reason": "ok"
+  }
+}

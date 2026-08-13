@@ -7,12 +7,12 @@ __url__ = 'https://github.com/LoRexxar/Kunlun-M'
 __issue_page__ = 'https://github.com/LoRexxar/Kunlun-M/issues/new'
 __python_version__ = sys.version.split()[0]
 __platform__ = platform.platform()
-__version__ = '2.6.5'
+__version__ = '2.15.1'
 __author__ = 'LoRexxar'
 __author_email__ = 'LoRexxar@gmail.com'
 __license__ = 'MIT License'
 __copyright__ = 'Copyright (C) 2017 LoRexxar. All Rights Reserved'
-__introduction__ = """
+__introduction__ = r"""
  _   __            _                      ___  ___
 | | / /           | |                     |  \/  |
 | |/ / _   _ _ __ | |    _   _ _ __       | .  . |
@@ -28,25 +28,24 @@ KunLun-M is a static code analysis system that automates the detecting vulnerabi
 
 """.format(version=__version__)
 __epilog__ = """Usage:
+  python {m} init
   python {m} scan -t {td}
   python {m} scan -t {td} -r 1000, 1001
   python {m} scan -t {td} -tp wordpress
   python {m} scan -t {td} -d -uc
-  
-  python {m} list rule -k php
+  python {m} console
+  python {m} web -p 9999
 """.format(m='kunlun.py', td='tests/vulnerabilities')
 __scan_epilog__ = """Usage:
   python {m} scan -t {td}
   python {m} scan -t {td} -r 1000, 1001
   python {m} scan -t {td} -tp wordpress
   python {m} scan -t {td} -f json -o /tmp/report.json 
+  python {m} scan -t {td} -f md -o /tmp/report.md
+  python {m} scan -t {td} -f html -o /tmp/report.html
   python {m} scan -t {td} --debug
   python {m} scan -t {td} -d -u
   python {m} scan -t {td} --lan php -b vendor --debug
   python {m} scan -t {td} --lan php -tp roundcube -d -uc
 
-""".format(m='kunlun.py', td='tests/vulnerabilities')
-__database_epilog__ = """Usage:
-  python {m} init initialize
-  python {m} init checksql index 0009_projectvendors_source
-""".format(m='kunlun.py')
+"""  .format(m='kunlun.py', td='tests/vulnerabilities')

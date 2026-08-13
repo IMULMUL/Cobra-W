@@ -16,11 +16,17 @@ from django.http import JsonResponse
 from django.views.decorators.csrf import csrf_exempt
 
 from web.index.controller import login_or_token_required, api_token_required
-from web.index.models import ScanTask, ScanResultTask, Rules, Tampers, NewEvilFunc, get_resultflow_class
+from web.index.models import ScanTask, ScanResultTask, Rules, NewEvilFunc, get_resultflow_class
 from web.index.models import get_and_check_scantask_project_id, get_and_check_scanresult
 from utils.utils import show_context
 
 from Kunlun_M.settings import LOGS_PATH
+from utils.path_safety import is_path_under
+
+
+def _is_path_under_allowed_dir(path, allowed_dir):
+    """检查路径是否在允许的目录内，防止路径遍历攻击（已迁移到 utils.path_safety）"""
+    return is_path_under(path, allowed_dir)
 
 
 def index(request):
@@ -104,6 +110,11 @@ def tasklogtail(req, task_id):
         offset = 0
 
     log_path = os.path.join(LOGS_PATH, "ScanTask_{}.log".format(task_id))
+
+    # 验证路径仍在 LOGS_PATH 目录内，防止路径遍历
+    if not _is_path_under_allowed_dir(log_path, LOGS_PATH):
+        return JsonResponse({"code": 400, "status": False, "message": "Bad request."})
+
     if not os.path.exists(log_path):
         return JsonResponse({"code": 200, "status": True, "message": {"offset": offset, "data": "", "eof": True}})
 
@@ -138,6 +149,10 @@ def debuglog(req, task_id):
 
     debuglog_filename = os.path.join(LOGS_PATH, 'ScanTask_{}.log'.format(task_id))
 
+    # 验证路径仍在 LOGS_PATH 目录内，防止路径遍历
+    if not _is_path_under_allowed_dir(debuglog_filename, LOGS_PATH):
+        return HttpResponse("Ooooops, bad request...", status=400)
+
     if not os.path.exists(debuglog_filename):
         return HttpResponse("Ooooops, Log file not found...")
 
@@ -162,6 +177,10 @@ def downloadlog(req, task_id):
         return redirect("dashboard:tasks_list")
 
     debuglog_filename = os.path.join(LOGS_PATH, 'ScanTask_{}.log'.format(task_id))
+
+    # 验证路径仍在 LOGS_PATH 目录内，防止路径遍历
+    if not _is_path_under_allowed_dir(debuglog_filename, LOGS_PATH):
+        return HttpResponse("Ooooops, bad request...", status=400)
 
     if not os.path.exists(debuglog_filename):
         return HttpResponse("Ooooops, Log file not found...")
@@ -200,11 +219,62 @@ def exportresult(req, task_id):
             w.writerow(r)
         return resp
 
+    if fmt == "html":
+        html_parts = [
+            "<!DOCTYPE html><html><head><meta charset='utf-8'>",
+            "<title>ScanTask {} Report</title>".format(task_id),
+            "<style>body{font-family:sans-serif;margin:20px}table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:8px;text-align:left}th{background:#f5f5f5}tr:nth-child(even){background:#fafafa}.meta{margin-bottom:20px;color:#666}</style>",
+            "</head><body>",
+            "<div class='meta'><h2>ScanTask #{} Report</h2>".format(task_id),
+            "<p>Task: {} | Target: {} | Total: {}</p>".format(
+                getattr(task, 'task_name', task_id), getattr(task, 'target_path', ''), len(rows)),
+            "</div>",
+            "<table><thead><tr>",
+        ]
+        if rows:
+            for k in rows[0].keys():
+                html_parts.append("<th>{}</th>".format(k))
+        html_parts.append("</tr></thead><tbody>")
+        for r in rows:
+            html_parts.append("<tr>")
+            for v in r.values():
+                html_parts.append("<td>{}</td>".format(str(v) if v is not None else ''))
+            html_parts.append("</tr>")
+        html_parts.append("</tbody></table></body></html>")
+
+        resp = HttpResponse('\n'.join(html_parts), content_type="text/html; charset=utf-8")
+        resp["Content-Disposition"] = "attachment; filename=ScanTask_{}_result.html".format(task_id)
+        return resp
+
+    if fmt == "md":
+        md_parts = [
+            "# ScanTask #{} Report".format(task_id),
+            "",
+            "- **Task**: {}".format(getattr(task, 'task_name', task_id)),
+            "- **Target**: {}".format(getattr(task, 'target_path', '')),
+            "- **Total**: {}".format(len(rows)),
+            "",
+        ]
+        if rows:
+            headers = list(rows[0].keys())
+            md_parts.append("| " + " | ".join(headers) + " |")
+            md_parts.append("| " + " | ".join(["---"] * len(headers)) + " |")
+            for r in rows:
+                md_parts.append("| " + " | ".join(str(v) if v is not None else '' for v in r.values()) + " |")
+        md_parts.append("")
+
+        resp = HttpResponse('\n'.join(md_parts), content_type="text/markdown; charset=utf-8")
+        resp["Content-Disposition"] = "attachment; filename=ScanTask_{}_result.md".format(task_id)
+        return resp
+
     resp = JsonResponse({"code": 200, "status": True, "message": rows})
     resp["Content-Disposition"] = "attachment; filename=ScanTask_{}_result.json".format(task_id)
     return resp
 
 
+# 使用 @csrf_exempt 是因为此接口通过 API Token 认证而非浏览器 Session，
+# API 客户端无法提供 CSRF Token，因此通过 @api_token_required 进行鉴权保护
+@csrf_exempt
 @api_token_required
 def uploadlog(req):
     if "file" not in req.FILES:
@@ -212,12 +282,19 @@ def uploadlog(req):
 
     logfile = req.FILES.get("file", None)
 
-    logfile_name = logfile.name
+    # 仅取文件名，防止通过路径组件进行路径遍历
+    logfile_name = os.path.basename(logfile.name)
 
-    if os.path.exists(os.path.join(LOGS_PATH, logfile_name)):
+    logfile_path = os.path.join(LOGS_PATH, logfile_name)
+
+    # 验证目标路径仍在 LOGS_PATH 目录内
+    if not _is_path_under_allowed_dir(logfile_path, LOGS_PATH):
+        return HttpResponse("Ooooops, bad request...", status=400)
+
+    if os.path.exists(logfile_path):
         return HttpResponse("Ooooops, log file {} exist...".format(logfile_name))
 
-    with open(os.path.join(LOGS_PATH, logfile_name), 'wb') as f:
+    with open(logfile_path, 'wb') as f:
         for chunk in logfile.chunks():
             f.write(chunk)
 

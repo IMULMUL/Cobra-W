@@ -70,34 +70,58 @@ def un_zip(target_path):
         logger.warn("[Pre][Unzip] Target file {} is't exist...pass".format(target_path))
         return False
 
-    zip_file = zipfile.ZipFile(target_path)
     target_file_path = target_path + "_files/"
+    abs_target = os.path.abspath(target_file_path)
 
     if os.path.isdir(target_file_path):
         logger.debug("[Pre][Unzip] Target files {} is exist...continue".format(target_file_path))
         return target_file_path
     else:
-        os.mkdir(target_file_path)
+        os.makedirs(target_file_path, exist_ok=True)
 
-    for names in zip_file.namelist():
-        zip_file.extract(names, target_file_path)
+    # 安全解压：逐个检查解压路径，防止 ZIP 路径遍历攻击（如 ../../etc/passwd）
+    with zipfile.ZipFile(target_path) as zip_file:
+        for info in zip_file.infolist():
+            name = info.filename
+            if not name:
+                continue
+            if name.endswith("/") or name.endswith("\\"):
+                # 自动创建目录结构
+                dir_path = os.path.abspath(os.path.join(abs_target, name))
+                if dir_path.startswith(abs_target + os.sep) or dir_path == abs_target:
+                    if not os.path.isdir(dir_path):
+                        os.makedirs(dir_path, exist_ok=True)
+                continue
 
-        # 对其中部分文件中为js的时候，将js代码格式化便于阅读
-        if names.endswith(".js"):
-            file_path = os.path.join(target_file_path, names)
-            file = codecs.open(file_path, 'r+', encoding='utf-8', errors='ignore')
-            file_content = file.read()
-            file.close()
+            joined = os.path.abspath(os.path.join(abs_target, name))
+            if not (joined == abs_target or joined.startswith(abs_target + os.sep)):
+                logger.warning("[Pre][Unzip] 跳过不安全路径: {}".format(name))
+                continue
 
-            new_file = codecs.open(file_path, 'w+', encoding='utf-8', errors='ignore')
+            parent = os.path.dirname(joined)
+            if not os.path.isdir(parent):
+                os.makedirs(parent, exist_ok=True)
 
-            opts = jsbeautifier.default_options()
-            opts.indent_size = 2
+            with zip_file.open(info) as src, open(joined, "wb") as dst:
+                while True:
+                    chunk = src.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    dst.write(chunk)
 
-            new_file.write(jsbeautifier.beautify(file_content, opts))
-            new_file.close()
+            # 对其中部分文件中为js的时候，将js代码格式化便于阅读
+            if name.endswith(".js"):
+                try:
+                    with codecs.open(joined, 'r+', encoding='utf-8', errors='ignore') as f:
+                        file_content = f.read()
 
-    zip_file.close()
+                    opts = jsbeautifier.default_options()
+                    opts.indent_size = 2
+
+                    with codecs.open(joined, 'w+', encoding='utf-8', errors='ignore') as new_file:
+                        new_file.write(jsbeautifier.beautify(file_content, opts))
+                except Exception as e:
+                    logger.warning("[Pre][Unzip] JS格式化失败 {}: {}".format(joined, str(e)))
 
     return target_file_path
 
@@ -134,11 +158,14 @@ def get_line(file_path, line_rule):
     """
     搜索指定文件的指定行到指定行的内容
     :param file_path: 指定文件
-    :param line_rule: 指定行规则
-    :return: 
+    :param line_rule: 指定行规则（支持 "1,14" 或 "15p" 或 "1,14p" 格式）
+    :return:
     """
-    s_line = int(line_rule.split(',')[0])
-    e_line = int(line_rule.split(',')[1])
+    # 兼容 "1,14p" 和 "15p" 格式，剥离 p 后缀
+    line_rule = line_rule.rstrip('p')
+    parts = line_rule.split(',')
+    s_line = int(parts[0])
+    e_line = int(parts[1]) if len(parts) > 1 else s_line
     result = []
 
     # with open(file_path) as file:
@@ -210,8 +237,8 @@ def load_kunlunmignore():
 
         regex_rule = re.escape(line)
 
-        regex_rule = regex_rule.replace('\*', '\w+')
-        regex_rule = regex_rule.replace('/', '[\/\\\\]')
+        regex_rule = regex_rule.replace(r'\*', r'\w+')
+        regex_rule = regex_rule.replace('/', r'[/\\]')
 
         # if regex_rule.startswith('!'):
         #     regex_rule = "[^({})]".format(regex_rule[1:])
@@ -247,7 +274,7 @@ class FileParseAll:
     def check_comment(self, content):
         backstr = ""
 
-        if self.language in ['php', 'javascript']:
+        if self.language in ['php', 'javascript', 'go']:
 
             lastchar = ""
             isinlinecomment = False
@@ -263,10 +290,11 @@ class FileParseAll:
                 if isinlinecomment:
                     if char == '\n':
                         isinlinecomment = False
-
                         lastchar = ''
                         backstr += '\n'
-                        continue
+                    else:
+                        lastchar = char
+                    continue
 
                 if char == '\n':
                     backstr += '\n'
@@ -331,20 +359,14 @@ class FileParseAll:
                 # print line, line_number
                 if re.search(reg, content, re.I):
 
-                    # 尝试通过以目标作为标志分割，来判断行数
-                    # 目标以前的回车数计算
+                    # 使用 match 对象的 start() 位置计算行号，避免 split(data) 在多个相同匹配时返回错误行号
                     p = re.compile(reg)
                     matchs = p.finditer(content)
 
                     for m in matchs:
 
                         data = m.group(0).strip()
-
-                        split_data = content.split(data)[0]
-                        # enddata = content.split(data)[1]
-
-                        LRnumber = " ".join(split_data).count('\n')
-
+                        LRnumber = content[:m.start()].count('\n') + m.group(0).count('\n')
                         match_numer = line_number - 10 + LRnumber
 
                         result.append((filepath, str(match_numer), data))
@@ -356,19 +378,12 @@ class FileParseAll:
             # 如果退出循环的时候没有清零，则还要检查一次
             if i > 0:
                 if re.search(reg, content, re.I):
-                    # 尝试通过以目标作为标志分割，来判断行数
-                    # 目标以前的回车数计算
                     p = re.compile(reg)
                     matchs = p.finditer(content)
 
                     for m in matchs:
                         data = m.group(0).strip()
-
-                        split_data = content.split(data)[0]
-                        # enddata = content.split(data)[1]
-
-                        LRnumber = " ".join(split_data).count('\n')
-
+                        LRnumber = content[:m.start()].count('\n') + m.group(0).count('\n')
                         match_numer = line_number - i + LRnumber
 
                         result.append((filepath, str(match_numer), data))
@@ -379,10 +394,9 @@ class FileParseAll:
         """
         多行匹配，对全文做匹配
         :param reg: 
-        :return: 
+        :return: list of (filepath, line_number_str, matched_text)
         """
         result = []
-        line_number = 0
 
         for ffile in self.t_filelist:
             filepath = check_filepath(self.target, ffile)
@@ -390,33 +404,37 @@ class FileParseAll:
             if not filepath:
                 continue
 
-            file = codecs.open(filepath, "r", encoding='utf-8', errors='ignore')
-            content = file.read(1000)
+            with codecs.open(filepath, "r", encoding='utf-8', errors='ignore') as file:
+                full_text = file.read()
 
-            r_con_obj = re.search(reg, content, re.I)
+            line_number = 0
+            search_pos = 0
+            compiled = re.compile(reg, re.I)
 
-            while content:
-                if r_con_obj:
-                    start_pos = r_con_obj.regs[0][0]
-                    line_number = len(content[:start_pos].split('\n'))
-                    result.append((filepath, str(line_number), r_con_obj.group(0)))
-
-                content = file.read(1000)
-
-            file.close()
+            while True:
+                m = compiled.search(full_text, search_pos)
+                if not m:
+                    break
+                # 行号 = 匹配位置之前的换行数 + 1（1-indexed）
+                line_number = full_text[:m.start()].count('\n') + 1
+                result.append((filepath, str(line_number), m.group()))
+                search_pos = m.end()
 
         return result
     
     def multi_grep_content(self, reg, content):
         content_tmp = content
         result = []
+        global_offset = 0
         while 1:
             r_con_obj = re.search(reg, content_tmp, re.I)
             if r_con_obj:
                 start_pos = r_con_obj.regs[0][0]
-                line_number = len(content[:start_pos].split('\n'))
+                # 使用全局偏移量计算正确的行号
+                line_number = len(content[:global_offset + start_pos].split('\n'))
                 result.append([str(line_number), r_con_obj.group(0)])
 
+                global_offset += r_con_obj.regs[0][1]
                 content_tmp = content_tmp[r_con_obj.regs[0][1]:]
             else:
                 break
@@ -451,13 +469,16 @@ class FileParseAll:
                 re_flag = True
                 # 正确使用，即reg = '(function aloha (_to) aloha)'，re_result形如 ("function balanceOf(address owner);","_to")
                 if len(re_result) == 2:# ['owner','function xxx(address owner)']
+                    # 优先取 group(1)（变量名），若为空则取 group(0)
+                    # 兼容双分支正则：Servlet 模式 ('name','') / 注解模式 ('','name')
+                    var_name = re_result[1] if re_result[1] else re_result[0]
                     for black in black_list:
                         if black in re_result[0] or black in re_result[1]:
                             re_flag = False
                             logger.debug('[DEBUG] [GREP_NAME_BLACK_LIST] match varname {0} in black list {1}'.format(re_result[0], black))
                     if re_flag:
-                        name.append(re_result[1])
-                        logger.debug('[DEBUG] [GREP_NAME_WITH_GROUP(0)_BLACK_CHECK] success match varname:{0}'.format(re_result[0]))
+                        name.append(var_name)
+                        logger.debug('[DEBUG] [GREP_NAME_WITH_GROUP(0)_BLACK_CHECK] success match varname:{0}'.format(var_name))
                 elif len(re_result) == 1: # ['owner']
                     for black in black_list:
                         if black in re_result[0]:
@@ -484,8 +505,14 @@ class FileParseAll:
                     name.remove(n)
 
             for n in name:
-                matchs_tmp = [match.replace("=padding=", n) for match in matchs]
-                unmatchs_tmp = [unmatch.replace("=padding=", n) for unmatch in unmatchs]
+                n_str = n
+                if not isinstance(n_str, str):
+                    if isinstance(n_str, tuple) and len(n_str) > 0 and isinstance(n_str[-1], str):
+                        n_str = n_str[-1]
+                    else:
+                        n_str = str(n_str)
+                matchs_tmp = [match.replace("=padding=", n_str) for match in matchs]
+                unmatchs_tmp = [unmatch.replace("=padding=", n_str) for unmatch in unmatchs]
                 
                 re_flag = True
                 line_number = 0
@@ -501,8 +528,8 @@ class FileParseAll:
                 if re_flag:
                     # 例如CVI2100中，没有match，只要不含unmatch即为漏洞的，没有行数
                     if matchs_tmp == []:
-                        result.append(tuple([filepath, str(line_number), 'name:<'+n+'>']))
-                        logger.debug('[DEBUG] [MATCH_REGEX_RETURN_REGEX] success match:{0} in line {1}'.format(n, str(line_number)))
+                        result.append(tuple([filepath, str(line_number), 'name:<'+n_str+'>']))
+                        logger.debug('[DEBUG] [MATCH_REGEX_RETURN_REGEX] success match:{0} in line {1}'.format(n_str, str(line_number)))
                         continue
 
                     # 正常的match，但条件为或
@@ -512,7 +539,7 @@ class FileParseAll:
                         if result_list_tmp is not None and result_list_tmp != []:
                             for result_tmp in result_list_tmp:
                                 result.append(tuple([filepath, str(line_number), 'name:<'+result_tmp[0]+'>, point:<'+result_tmp[1]+'>']))
-                                logger.debug('[DEBUG] [MATCH_REGEX_RETURN_REGEX] success match:{0} in line {1}'.format(n, str(line_number)))
+                                logger.debug('[DEBUG] [MATCH_REGEX_RETURN_REGEX] success match:{0} in line {1}'.format(n_str, str(line_number)))
                         else:
                             re_flag = False
 
@@ -699,10 +726,15 @@ class Directory(object):
                     directory = os.path.join(absolute_path, filename)
 
                     # check black path list
-                    # if self.black_path_list:
-                    #     for black_path in self.black_path_list:
-                    #         if black_path in filename:
-                    #             flag = 1
+                    is_black = False
+                    if self.black_path_list:
+                        for black_path in self.black_path_list:
+                            if black_path in filename:
+                                is_black = True
+                                break
+                    if is_black:
+                        continue
+
                     if not check_kunlunignore(directory):
                         continue
 
@@ -726,7 +758,7 @@ class Directory(object):
 
         self.type_nums.setdefault(file_extension.lower(), []).append(filename)
 
-        path = path.replace(self.absolute_path, '')
+        path = path.replace(self.absolute_path, '').lstrip('/')
         self.file.append(path)
         self.file_sum += 1
 

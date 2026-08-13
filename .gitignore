@@ -76,6 +76,7 @@ scheduler/reports/
 # venv
 cobra-venv/*
 venv/*
+.venv/*
 
 # phply
 parsetab.py
@@ -84,13 +85,36 @@ parsetab.py
 result/*
 *.csv
 
+# CI artifacts
+artifacts/
+
 # real_test
 tests/real_test/*
 tests/*
+!tests/nodejs/
+!tests/c/
+!tests/python/
+!tests/go/
+!tests/java/
+!tests/php/
+!tests/test_python_cross_file.py
+!tests/test_js_cross_file.py
+!tests/test_go_cross_file.py
+!tests/test_c_cross_file.py
+# Test runner output
+tests/*/_newcore_output/
+
+# scan artifacts
+*.pretty
+.kunlun_cache/
 
 # new rule for test
 rules/tamper/*
 !rules/tamper/demo.py
+!rules/tamper/demo_go.py
+!rules/tamper/demo_java.py
+!rules/tamper/demo_python.py
+!rules/tamper/demo_nodejs.py
 !rules/tamper/wordpress.py
 !rules/tamper/__init__.py
 
@@ -101,6 +125,18 @@ rules/*
 !rules/javascript/CVI_3003.py
 !rules/solidity/CVI_2001.py
 !rules/base/*
+!rules/python/*
+!rules/python/__init__.py
+!rules/tamper/demo_python.py
+!rules/go/
+!rules/go/*
+!rules/c/
+!rules/c/__init__.py
+!rules/c/*
+!rules/go/__init__.py
+!rules/nodejs/
+!rules/nodejs/*
+!rules/nodejs/__init__.py
 
 # upload
 uploads/*.zip
@@ -142,3 +178,13 @@ progress.md
 
 # php tools
 */.kunlunm_unserialize_poc/*
+
+# Java decompiler
+tools/cfr.jar
+cfr.jar_decompiled/
+.claude/
+CLAUDE.md
+docs/design/
+
+# Function summary cache
+.kunlun_cache/
